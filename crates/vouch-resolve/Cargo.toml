@@ -8,4 +8,5 @@ authors.workspace = true
 vouch-core = { path = "../vouch-core" }
 vouch-rpc = { path = "../vouch-rpc" }
 vouch-alpm = { path = "../vouch-alpm" }
+vouch-pkgbuild = { path = "../vouch-pkgbuild" }
 anyhow.workspace = true

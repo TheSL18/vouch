@@ -27,6 +27,7 @@
 //! than silently trust.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use vouch_core::PackageMeta;
@@ -268,6 +269,116 @@ pub fn find_upgrades() -> Result<Vec<Upgrade>> {
         .collect();
     upgrades.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(upgrades)
+}
+
+/// Name suffixes that mark a VCS (development) package.
+const VCS_SUFFIXES: &[&str] = &["-git", "-svn", "-hg", "-bzr", "-cvs", "-darcs"];
+
+/// Find installed VCS/"-git" packages whose upstream has new commits (devel
+/// upgrades). For each, compare the upstream HEAD to the commit hash embedded in
+/// the installed version; if it differs (or can't be determined) the package is
+/// a rebuild candidate. This is the `--devel` counterpart to [`find_upgrades`],
+/// which only catches version-bump upgrades.
+pub fn find_devel_upgrades() -> Result<Vec<Upgrade>> {
+    let alpm = vouch_alpm::Db::open().context("opening libalpm")?;
+    let vcs: Vec<(String, String)> = alpm
+        .foreign_packages()
+        .into_iter()
+        .filter(|(n, _)| VCS_SUFFIXES.iter().any(|s| n.ends_with(s)))
+        .collect();
+    if vcs.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Keep only those still in the AUR (map name -> package base).
+    let names: Vec<&str> = vcs.iter().map(|(n, _)| n.as_str()).collect();
+    let mut base_of: BTreeMap<String, String> = BTreeMap::new();
+    for chunk in names.chunks(50) {
+        for m in vouch_rpc::info_many(chunk).context("querying AUR")? {
+            base_of.insert(m.name.clone(), m.package_base);
+        }
+    }
+
+    let mut upgrades = Vec::new();
+    for (name, installed) in vcs {
+        let Some(base) = base_of.get(&name) else {
+            continue;
+        };
+        // None (undeterminable) -> rebuild to be safe; Some(false) -> up to date.
+        if upstream_changed(base, &installed).unwrap_or(true) {
+            upgrades.push(Upgrade {
+                name,
+                installed,
+                available: "latest commit".to_string(),
+            });
+        }
+    }
+    upgrades.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(upgrades)
+}
+
+/// `Some(true)` if the upstream HEAD differs from the commit baked into
+/// `installed_version`, `Some(false)` if the same, `None` if undeterminable.
+fn upstream_changed(package_base: &str, installed_version: &str) -> Option<bool> {
+    let bundle = vouch_pkgbuild::fetch(package_base).ok()?;
+    let url = first_vcs_url(&bundle.pkgbuild)?;
+    let installed = extract_commit(installed_version)?;
+    let head = git_ls_remote_head(&url)?;
+    Some(!head.starts_with(&installed))
+}
+
+/// Extract the first VCS source URL from a PKGBUILD, e.g.
+/// `source=('name::git+https://x/y.git#branch=z')` -> `https://x/y.git`.
+fn first_vcs_url(pkgbuild: &str) -> Option<String> {
+    for proto in ["git+", "svn+", "hg+", "bzr+"] {
+        if let Some(start) = pkgbuild.find(proto) {
+            let after = &pkgbuild[start + proto.len()..];
+            let end = after
+                .find(|c: char| c == '#' || c == '\'' || c == '"' || c.is_whitespace() || c == ')')
+                .unwrap_or(after.len());
+            let url = &after[..end];
+            if !url.is_empty() {
+                return Some(url.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// The first hexadecimal run of length >= 7 in a version string (the short
+/// commit hash baked into a VCS `pkgver`, e.g. `r567.2d12974-1` -> `2d12974`).
+fn extract_commit(version: &str) -> Option<String> {
+    let bytes = version.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_hexdigit() {
+            let start = i;
+            while i < bytes.len() && bytes[i].is_ascii_hexdigit() {
+                i += 1;
+            }
+            if i - start >= 7 {
+                return Some(version[start..i].to_ascii_lowercase());
+            }
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+/// `git ls-remote <url> HEAD` -> the HEAD commit hash (lowercase), if reachable.
+fn git_ls_remote_head(url: &str) -> Option<String> {
+    let out = Command::new("git")
+        .args(["ls-remote", url, "HEAD"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let line = String::from_utf8_lossy(&out.stdout);
+    line.split_whitespace()
+        .next()
+        .map(|h| h.to_ascii_lowercase())
 }
 
 /// Strip a version constraint / soname tail from a dependency atom:

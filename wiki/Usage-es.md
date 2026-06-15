@@ -25,6 +25,11 @@
   cambios, y reduce el aislamiento (se imprime un aviso claro).
 - `--rmdeps` — tras instalar, quita las dependencias solo-de-build (make/check que
   no se necesitan en runtime) que nada más requiere (`pacman -Rns`).
+- `--devel` (solo `upgrade`) — también recompila los paquetes VCS instalados
+  (`-git`, `-svn`, …) cuyo upstream tiene commits nuevos. vouch compara el `HEAD`
+  upstream con el commit incrustado en la versión instalada. (Los paquetes que usan
+  fuente VCS pero versionan como release no se autodetectan — recompílalos con
+  `vouch -S <pkg>`.)
 
 ## Veredictos y códigos de salida
 

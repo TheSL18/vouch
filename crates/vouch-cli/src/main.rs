@@ -121,6 +121,10 @@ enum Command {
         /// needed (`pacman -Rns`).
         #[arg(long)]
         rmdeps: bool,
+        /// Also rebuild installed VCS packages (`-git`, `-svn`, …) whose
+        /// upstream has new commits.
+        #[arg(long)]
+        devel: bool,
     },
     /// Forget the stored review record for a package (re-arms TOFU for it).
     Forget {
@@ -185,7 +189,8 @@ fn main() -> ExitCode {
             dry_run,
             allow_build_network,
             rmdeps,
-        } => match upgrade(force, yes, dry_run, allow_build_network, rmdeps) {
+            devel,
+        } => match upgrade(force, yes, dry_run, allow_build_network, rmdeps, devel) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => fail(e),
         },
@@ -257,11 +262,11 @@ fn full_upgrade(targets: &[String], noconfirm: bool) -> Result<()> {
     if noconfirm {
         a.push("--noconfirm".into());
     }
-    println!("{} upgrading repo packages…", "vouch:".bold());
+    println!("{} upgrading repo packages…", "vouch:".bright_cyan().bold());
     run_pacman_raw(&a, true)?;
 
-    println!("{} upgrading AUR packages…", "vouch:".bold());
-    upgrade(false, noconfirm, false, false, false)?;
+    println!("{} upgrading AUR packages…", "vouch:".bright_cyan().bold());
+    upgrade(false, noconfirm, false, false, false, false)?;
 
     if !targets.is_empty() {
         install_targets(targets, noconfirm)?;
@@ -276,7 +281,7 @@ fn install_targets(targets: &[String], noconfirm: bool) -> Result<()> {
     if !repo.is_empty() {
         println!(
             "{} installing repo packages: {}",
-            "vouch:".bold(),
+            "vouch:".bright_cyan().bold(),
             repo.join(" ").dimmed()
         );
         let mut a = vec!["-S".to_string()];
@@ -360,19 +365,22 @@ fn show_review_status(key: &str, bundle: &SourceBundle) {
     let files = reviewed_files(bundle);
     match store.status(key, &files) {
         Ok(ReviewStatus::New) => {
-            println!("{} not vouched before (new to you)", "review:".bold());
+            println!(
+                "{} not vouched before (new to you)",
+                "review:".bright_blue().bold()
+            );
         }
         Ok(ReviewStatus::Unchanged { record }) => {
             println!(
                 "{} unchanged since you vouched it {}",
-                "review:".bold(),
+                "review:".bright_blue().bold(),
                 human_since(record.approved_at)
             );
         }
         Ok(ReviewStatus::Changed { previous, .. }) => {
             println!(
                 "{} {} changed since you vouched it {}",
-                "review:".bold(),
+                "review:".bright_blue().bold(),
                 "⚠".yellow().bold(),
                 human_since(previous.approved_at)
             );
@@ -416,7 +424,11 @@ fn build(target: &str, force: bool, yes: bool, allow_net: bool) -> Result<()> {
     let outcome = vouch_build::build_in_sandbox(&build_dir, build_network)?;
 
     println!();
-    println!("{} {}", "vouch:".bold(), "build complete".green().bold());
+    println!(
+        "{} {}",
+        "vouch:".bright_cyan().bold(),
+        "build complete".green().bold()
+    );
     for p in &outcome.packages {
         println!("  {} {}", "✓".green(), p.display());
     }
@@ -456,7 +468,7 @@ fn prepare_aur_build(
     let dest = unique_build_dir(&meta.package_base);
     println!(
         "{} cloning {} …",
-        "vouch:".bold(),
+        "vouch:".bright_cyan().bold(),
         format!("aur/{}", meta.package_base).dimmed()
     );
     vouch_pkgbuild::clone(&meta.package_base, &dest).context("cloning AUR repo")?;
@@ -489,14 +501,14 @@ fn gate_with_tofu(
         ReviewStatus::New => {
             println!(
                 "{} first time vouching this recipe (trust-on-first-use)",
-                "vouch:".bold()
+                "vouch:".bright_cyan().bold()
             );
             gate(verdict, force, yes)?;
         }
         ReviewStatus::Unchanged { record } => {
             println!(
                 "{} unchanged since you vouched it {} (risk was {}/100)",
-                "vouch:".bold(),
+                "vouch:".bright_cyan().bold(),
                 human_since(record.approved_at),
                 record.score_at_approval
             );
@@ -510,7 +522,7 @@ fn gate_with_tofu(
         ReviewStatus::Changed { previous, .. } => {
             println!(
                 "{} {} this recipe CHANGED since you vouched it {}",
-                "vouch:".bold(),
+                "vouch:".bright_cyan().bold(),
                 "⚠".yellow().bold(),
                 human_since(previous.approved_at)
             );
@@ -539,11 +551,14 @@ fn announce_build(build_network: bool) {
     if build_network {
         println!(
             "{} building with {} (reduced isolation — recipe is still vetted)",
-            "vouch:".bold(),
+            "vouch:".bright_cyan().bold(),
             "NETWORK ACCESS".yellow().bold()
         );
     } else {
-        println!("{} building in a network-denied sandbox…", "vouch:".bold());
+        println!(
+            "{} building in a network-denied sandbox…",
+            "vouch:".bright_cyan().bold()
+        );
     }
 }
 
@@ -606,12 +621,12 @@ fn install(
 
     if dry_run {
         for name in &plan.aur_build_order {
-            println!("\n{} {}", "::".blue().bold(), name.bold());
+            println!("\n{} {}", "::".bright_blue().bold(), name.bold());
             dry_run_vet(name)?;
         }
         println!(
             "\n{} dry run — nothing built or installed.",
-            "vouch:".bold()
+            "vouch:".bright_cyan().bold()
         );
         print_pacman_plan(&plan);
         if rmdeps && !plan.make_only_deps.is_empty() {
@@ -657,7 +672,7 @@ fn install(
         // collecting the build jobs as (name, build-dir, allow-network).
         let mut jobs: Vec<(String, PathBuf, bool)> = Vec::with_capacity(layer.len());
         for name in layer {
-            println!("\n{} {}", "::".blue().bold(), name.bold());
+            println!("\n{} {}", "::".bright_blue().bold(), name.bold());
             let (dest, key, bundle, verdict) = prepare_aur_build(name, force, yes)?;
             let build_network =
                 gate_with_tofu(&store, &key, &bundle, &verdict, force, yes, allow_net)?;
@@ -677,7 +692,7 @@ fn install(
 
     println!(
         "\n{} {}",
-        "vouch:".bold(),
+        "vouch:".bright_cyan().bold(),
         "installation complete".green().bold()
     );
 
@@ -708,7 +723,7 @@ fn remove_unneeded_make_deps(make_only: &[String]) -> Result<()> {
     }
     println!(
         "{} removing build-only dependencies: {}",
-        "vouch:".bold(),
+        "vouch:".bright_cyan().bold(),
         removable.join(" ").dimmed()
     );
     let status = pacman_cmd()
@@ -734,7 +749,7 @@ fn build_layer_parallel(
 ) -> Result<()> {
     println!(
         "\n{} building {} packages in parallel…",
-        "vouch:".bold(),
+        "vouch:".bright_cyan().bold(),
         jobs.len()
     );
 
@@ -761,7 +776,12 @@ fn build_layer_parallel(
         for ((name, _, _), result) in chunk.iter().zip(results) {
             let (packages, log) = result.with_context(|| format!("building {name}"))?;
             print!("{log}");
-            println!("{} {} {}", "vouch:".bold(), "built".green(), name.bold());
+            println!(
+                "{} {} {}",
+                "vouch:".bright_cyan().bold(),
+                "built".green(),
+                name.bold()
+            );
             pacman_install_file(&packages, !explicit_targets.contains(name))?;
         }
     }
@@ -770,11 +790,11 @@ fn build_layer_parallel(
 
 /// Print the resolved plan up front so the user sees the whole blast radius.
 fn print_plan(plan: &vouch_resolve::ResolvedPlan) {
-    println!("{} resolution", "vouch:".bold());
+    println!("{} resolution", "vouch:".bright_cyan().bold());
     println!(
         "  AUR packages to build ({}, in order): {}",
-        plan.aur_build_order.len(),
-        plan.aur_build_order.join(" → ").bold()
+        plan.aur_build_order.len().to_string().bright_yellow(),
+        plan.aur_build_order.join(" → ").bright_cyan().bold()
     );
     if plan.layers.iter().any(|l| l.len() > 1) {
         let shown = plan
@@ -852,7 +872,7 @@ fn pacman_cmd() -> std::process::Command {
 fn pacman_sync(names: &[&str]) -> Result<()> {
     println!(
         "{} installing repo dependencies: {}",
-        "vouch:".bold(),
+        "vouch:".bright_cyan().bold(),
         names.join(" ").dimmed()
     );
     let status = pacman_cmd()
@@ -913,16 +933,48 @@ fn confirm(prompt: &str) -> Result<bool> {
 // upgrade (-Syu for the AUR layer)
 // ----------------------------------------------------------------------------
 
-fn upgrade(force: bool, yes: bool, dry_run: bool, allow_net: bool, rmdeps: bool) -> Result<()> {
-    let upgrades = vouch_resolve::find_upgrades().context("checking for AUR upgrades")?;
+fn upgrade(
+    force: bool,
+    yes: bool,
+    dry_run: bool,
+    allow_net: bool,
+    rmdeps: bool,
+    devel: bool,
+) -> Result<()> {
+    let mut upgrades = vouch_resolve::find_upgrades().context("checking for AUR upgrades")?;
+    if devel {
+        println!(
+            "{} checking VCS packages for new commits…",
+            "vouch:".bright_cyan().bold()
+        );
+        let dev = vouch_resolve::find_devel_upgrades().context("checking devel upgrades")?;
+        // Merge, skipping any already found by version comparison.
+        for u in dev {
+            if !upgrades.iter().any(|e| e.name == u.name) {
+                upgrades.push(u);
+            }
+        }
+        upgrades.sort_by(|a, b| a.name.cmp(&b.name));
+    }
+
     if upgrades.is_empty() {
-        println!("{} all AUR packages are up to date", "vouch:".bold());
+        println!(
+            "{} all AUR packages are up to date",
+            "vouch:".bright_cyan().bold()
+        );
+        if !devel {
+            println!(
+                "  {} pass {} to also check VCS (-git) packages for new commits",
+                "→".dimmed(),
+                "--devel".bold()
+            );
+        }
         return Ok(());
     }
 
     println!(
         "{} {} AUR upgrade(s) available:",
-        "vouch:".bold(),
+        "vouch:".bright_cyan().bold(),
         upgrades.len()
     );
     for u in &upgrades {
@@ -947,7 +999,10 @@ fn upgrade(force: bool, yes: bool, dry_run: bool, allow_net: bool, rmdeps: bool)
 fn search(query: &str) -> Result<()> {
     let mut results = vouch_rpc::search(query).context("searching the AUR")?;
     if results.is_empty() {
-        println!("{} no AUR packages match {query:?}", "vouch:".bold());
+        println!(
+            "{} no AUR packages match {query:?}",
+            "vouch:".bright_cyan().bold()
+        );
         return Ok(());
     }
     // Most-voted first, then by popularity.
@@ -1005,14 +1060,17 @@ fn ioc(import: Option<&Path>) -> Result<()> {
             .unwrap_or_default();
         println!(
             "{} imported feed — {total} indicators now in {}",
-            "vouch:".bold(),
+            "vouch:".bright_cyan().bold(),
             dest.dimmed()
         );
         return Ok(());
     }
 
     let ind = vouch_ioc::Indicators::load_default();
-    println!("{} indicators of compromise loaded:", "vouch:".bold());
+    println!(
+        "{} indicators of compromise loaded:",
+        "vouch:".bright_cyan().bold()
+    );
     println!("  bad package names: {}", ind.bad_package_names.len());
     println!("  bad maintainers:   {}", ind.bad_maintainers.len());
     println!("  bad strings:       {}", ind.bad_strings.len());
@@ -1043,9 +1101,15 @@ fn ioc(import: Option<&Path>) -> Result<()> {
 fn forget(package: &str) -> Result<()> {
     let store = ReviewStore::open_default().context("opening the review store")?;
     if store.forget(package)? {
-        println!("{} forgot review record for {package}", "vouch:".bold());
+        println!(
+            "{} forgot review record for {package}",
+            "vouch:".bright_cyan().bold()
+        );
     } else {
-        println!("{} no review record for {package}", "vouch:".bold());
+        println!(
+            "{} no review record for {package}",
+            "vouch:".bright_cyan().bold()
+        );
     }
     Ok(())
 }
@@ -1086,10 +1150,11 @@ fn print_review_diff(diff: &str) {
 
 fn print_meta(meta: &PackageMeta) {
     println!(
-        "{} {} {}",
-        "vouch:".bold(),
+        "{} {} {} {}",
+        "vouch:".bright_cyan().bold(),
         "vetting".dimmed(),
-        format!("{} {}", meta.name, meta.version).bold()
+        meta.name.bright_cyan().bold(),
+        meta.version.green()
     );
     let maint = meta.maintainer.as_deref().unwrap_or("(orphaned)");
     println!(
@@ -1152,7 +1217,7 @@ fn print_findings(verdict: &Verdict) {
     };
     println!(
         "{} {} {} (risk {}/100)",
-        "vouch:".bold(),
+        "vouch:".bright_cyan().bold(),
         verdict.decision.label().color(color).bold(),
         verb.color(color),
         verdict.score

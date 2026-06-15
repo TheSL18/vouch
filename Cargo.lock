@@ -1019,6 +1019,7 @@ dependencies = [
  "anyhow",
  "vouch-alpm",
  "vouch-core",
+ "vouch-pkgbuild",
  "vouch-rpc",
 ]
 

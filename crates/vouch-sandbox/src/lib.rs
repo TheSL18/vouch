@@ -101,6 +101,10 @@ impl Sandbox {
         cmd.arg("--ro-bind-try")
             .arg("/var/lib/pacman")
             .arg("/var/lib/pacman");
+        // Many toolchains (electron, flutter-bin, dart, etc.) live under /opt
+        // and are reached via symlinks in /usr/bin; expose it read-only so those
+        // builds can find their tools.
+        cmd.arg("--ro-bind-try").arg("/opt").arg("/opt");
         // Kernel/dev surfaces, plus an ephemeral /tmp.
         cmd.arg("--proc").arg("/proc");
         cmd.arg("--dev").arg("/dev");
@@ -178,7 +182,10 @@ impl Sandbox {
 /// The minimal environment every sandboxed command starts with.
 fn default_env() -> Vec<(OsString, OsString)> {
     vec![
-        ("PATH".into(), "/usr/bin".into()),
+        (
+            "PATH".into(),
+            "/usr/local/sbin:/usr/local/bin:/usr/bin".into(),
+        ),
         ("LANG".into(), "C.UTF-8".into()),
         (
             "TERM".into(),

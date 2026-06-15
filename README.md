@@ -62,7 +62,8 @@ vouch forget <pkg>           # drop a stored approval (re-arms TOFU)
 Useful flags: `--dry-run` (plan only), `--yes` (accept REVIEW / a changed recipe),
 `--force` (override a REFUSED verdict — discouraged), `--allow-build-network`
 (let a recipe fetch at build time; per-package, remembered, reduces isolation),
-`--rmdeps` (remove build-only dependencies after installing).
+`--rmdeps` (remove build-only dependencies after installing), `--devel`
+(`upgrade` only: also rebuild VCS/`-git` packages whose upstream has new commits).
 
 ### pacman-style syntax
 
