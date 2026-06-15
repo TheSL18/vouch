@@ -30,12 +30,25 @@ use vouch_review::{ReviewStatus, ReviewStore, ReviewedFile, render_diff};
 #[command(
     name = "vouch",
     version,
-    about = "A security-first AUR helper that vouches for packages before it installs them."
+    about = "A security-first AUR helper that vouches for packages before it installs them.",
+    after_help = PACMAN_STYLE_HELP
 )]
 struct Cli {
     #[command(subcommand)]
     command: Command,
 }
+
+/// Shown at the end of `vouch --help`, since the pacman-style front-end is
+/// handled before clap and wouldn't otherwise appear.
+const PACMAN_STYLE_HELP: &str = "\
+Pacman-style syntax (also accepted, like yay/paru):
+  vouch -Syu              Full upgrade: repos via pacman, then the AUR
+  vouch -S <pkg...>       Install (repo targets -> pacman, AUR targets -> vouch)
+  vouch -Ss <query>       Search repos and the AUR
+  vouch -Sy               Refresh the sync databases
+  vouch -R/-Q/-U/... <..> Handed straight to pacman
+
+Both styles work; use whichever you prefer.";
 
 #[derive(Subcommand)]
 enum Command {
