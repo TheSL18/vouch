@@ -5,6 +5,24 @@
 //! to its own subcommands. This module only *parses* such an invocation into an
 //! [`Action`]; `main` decides how to carry it out (vetting AUR work through the
 //! normal pipeline, passing the rest to `pacman`).
+//!
+//! vouch's own gate flags (`--force`, `--yes`, `--allow-build-network`,
+//! `--rmdeps`, `--no-devel`, `--no-sandbox`, `--dry-run`) are recognized here
+//! too, so they work the same whether you write `vouch -S pkg --force` or
+//! `vouch install pkg --force`.
+
+/// vouch gate/build options that apply to an install or upgrade, parsed out of a
+/// pacman-style invocation so they aren't silently dropped.
+#[derive(Debug, Default, PartialEq, Eq, Clone)]
+pub struct Opts {
+    pub force: bool,
+    pub yes: bool,
+    pub dry_run: bool,
+    pub allow_build_network: bool,
+    pub rmdeps: bool,
+    pub no_devel: bool,
+    pub no_sandbox: bool,
+}
 
 /// What a pacman-style invocation maps to.
 #[derive(Debug, PartialEq, Eq)]
@@ -14,11 +32,15 @@ pub enum Action {
     FullUpgrade {
         targets: Vec<String>,
         noconfirm: bool,
+        opts: Opts,
     },
     /// `-S <targets>` — install (repo targets go to pacman, AUR ones to vouch).
+    /// `refresh` is set when `-y` was also given (`-Sy pkg`).
     Install {
         targets: Vec<String>,
         noconfirm: bool,
+        refresh: bool,
+        opts: Opts,
     },
     /// `-Ss <query>` — search repos (pacman) and the AUR (vouch).
     Search { query: Vec<String> },
@@ -37,12 +59,23 @@ pub fn parse(args: &[String]) -> Action {
     let mut mods: std::collections::BTreeSet<char> = Default::default();
     let mut targets: Vec<String> = Vec::new();
     let mut noconfirm = false;
+    let mut opts = Opts::default();
 
     for a in args {
         if a == "--noconfirm" {
             noconfirm = true;
-        } else if a.starts_with("--") {
-            // Other long options aren't interpreted here.
+        } else if let Some(long) = a.strip_prefix("--") {
+            // Recognize vouch's own flags; other long options are ignored here.
+            match long {
+                "force" => opts.force = true,
+                "yes" => opts.yes = true,
+                "dry-run" => opts.dry_run = true,
+                "allow-build-network" => opts.allow_build_network = true,
+                "rmdeps" => opts.rmdeps = true,
+                "no-devel" => opts.no_devel = true,
+                "no-sandbox" => opts.no_sandbox = true,
+                _ => {}
+            }
         } else if let Some(short) = a.strip_prefix('-') {
             for c in short.chars() {
                 if op.is_none() && "SRQDFTU".contains(c) {
@@ -61,9 +94,18 @@ pub fn parse(args: &[String]) -> Action {
             if mods.contains(&'s') {
                 Action::Search { query: targets }
             } else if mods.contains(&'u') {
-                Action::FullUpgrade { targets, noconfirm }
+                Action::FullUpgrade {
+                    targets,
+                    noconfirm,
+                    opts,
+                }
             } else if !targets.is_empty() {
-                Action::Install { targets, noconfirm }
+                Action::Install {
+                    targets,
+                    noconfirm,
+                    refresh: mods.contains(&'y'),
+                    opts,
+                }
             } else if mods.contains(&'y') {
                 Action::Refresh { noconfirm }
             } else {
@@ -91,7 +133,8 @@ mod tests {
             parse(&args(&["-Syu"])),
             Action::FullUpgrade {
                 targets: vec![],
-                noconfirm: false
+                noconfirm: false,
+                opts: Opts::default(),
             }
         );
         // -Syyu and a trailing --noconfirm.
@@ -99,7 +142,8 @@ mod tests {
             parse(&args(&["-Syyu", "--noconfirm"])),
             Action::FullUpgrade {
                 targets: vec![],
-                noconfirm: true
+                noconfirm: true,
+                opts: Opts::default(),
             }
         );
     }
@@ -110,7 +154,9 @@ mod tests {
             parse(&args(&["-S", "paru", "firefox"])),
             Action::Install {
                 targets: args(&["paru", "firefox"]),
-                noconfirm: false
+                noconfirm: false,
+                refresh: false,
+                opts: Opts::default(),
             }
         );
         assert_eq!(
@@ -124,6 +170,50 @@ mod tests {
     #[test]
     fn refresh_only() {
         assert_eq!(parse(&args(&["-Sy"])), Action::Refresh { noconfirm: false });
+    }
+
+    #[test]
+    fn install_with_refresh() {
+        // `-Sy pkg` installs and asks for a db refresh first.
+        assert_eq!(
+            parse(&args(&["-Sy", "session-desktop"])),
+            Action::Install {
+                targets: args(&["session-desktop"]),
+                noconfirm: false,
+                refresh: true,
+                opts: Opts::default(),
+            }
+        );
+    }
+
+    #[test]
+    fn vouch_flags_are_threaded() {
+        // The bug this guards against: vouch's gate flags were dropped in
+        // pacman-style mode, so `--force` did nothing.
+        let want = Opts {
+            force: true,
+            ..Opts::default()
+        };
+        match parse(&args(&["-Sy", "session-desktop", "--force"])) {
+            Action::Install { opts, refresh, .. } => {
+                assert_eq!(opts, want);
+                assert!(refresh);
+            }
+            other => panic!("expected Install, got {other:?}"),
+        }
+        // Order-independent and works in the -S form too.
+        match parse(&args(&["-S", "--force", "pkg"])) {
+            Action::Install { opts, .. } => assert_eq!(opts, want),
+            other => panic!("expected Install, got {other:?}"),
+        }
+        // Several flags at once on an upgrade.
+        match parse(&args(&["-Syu", "--yes", "--no-devel", "--rmdeps"])) {
+            Action::FullUpgrade { opts, .. } => {
+                assert!(opts.yes && opts.no_devel && opts.rmdeps);
+                assert!(!opts.force);
+            }
+            other => panic!("expected FullUpgrade, got {other:?}"),
+        }
     }
 
     #[test]

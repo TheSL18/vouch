@@ -256,8 +256,17 @@ fn now_unix() -> i64 {
 
 fn run_pacman_style(raw: &[String]) -> ExitCode {
     let res = match compat::parse(raw) {
-        compat::Action::FullUpgrade { targets, noconfirm } => full_upgrade(&targets, noconfirm),
-        compat::Action::Install { targets, noconfirm } => install_targets(&targets, noconfirm),
+        compat::Action::FullUpgrade {
+            targets,
+            noconfirm,
+            opts,
+        } => full_upgrade(&targets, noconfirm, &opts),
+        compat::Action::Install {
+            targets,
+            noconfirm,
+            refresh,
+            opts,
+        } => install_targets(&targets, noconfirm, refresh, &opts),
         compat::Action::Search { query } => {
             // Repo matches first (read-only pacman), then the AUR via vouch.
             let mut a = vec!["-Ss".to_string()];
@@ -285,44 +294,72 @@ fn run_pacman_style(raw: &[String]) -> ExitCode {
 }
 
 /// `-Syu`: upgrade the repos with pacman, then the AUR layer with vouch, then
-/// install any extra targets.
-fn full_upgrade(targets: &[String], noconfirm: bool) -> Result<()> {
+/// install any extra targets. vouch's gate flags (`--force`, `--yes`, …) are
+/// honoured via `opts`.
+fn full_upgrade(targets: &[String], noconfirm: bool, opts: &compat::Opts) -> Result<()> {
     let mut a = vec!["-Syu".to_string()];
     if noconfirm {
         a.push("--noconfirm".into());
     }
-    println!("{} upgrading repo packages…", "vouch:".bright_cyan().bold());
-    run_pacman_raw(&a, true)?;
+    if !opts.dry_run {
+        println!("{} upgrading repo packages…", "vouch:".bright_cyan().bold());
+        run_pacman_raw(&a, true)?;
+    }
 
     println!("{} upgrading AUR packages…", "vouch:".bright_cyan().bold());
-    // -Syu is a full upgrade, so include VCS/devel packages by default.
-    upgrade(false, noconfirm, false, false, false, true, false)?;
+    // -Syu is a full upgrade, so include VCS/devel packages unless --no-devel.
+    upgrade(
+        opts.force,
+        noconfirm || opts.yes,
+        opts.dry_run,
+        opts.allow_build_network,
+        opts.rmdeps,
+        !opts.no_devel,
+        opts.no_sandbox,
+    )?;
 
     if !targets.is_empty() {
-        install_targets(targets, noconfirm)?;
+        install_targets(targets, noconfirm, false, opts)?;
     }
     Ok(())
 }
 
 /// `-S <targets>`: repo targets go to pacman, AUR targets through vouch's
-/// vetted install pipeline.
-fn install_targets(targets: &[String], noconfirm: bool) -> Result<()> {
+/// vetted install pipeline. `refresh` (`-Sy`) refreshes the sync DBs first;
+/// vouch's gate flags are carried through `opts`.
+fn install_targets(
+    targets: &[String],
+    noconfirm: bool,
+    refresh: bool,
+    opts: &compat::Opts,
+) -> Result<()> {
     let (repo, aur) = classify_targets(targets);
-    if !repo.is_empty() {
-        println!(
-            "{} installing repo packages: {}",
-            "vouch:".bright_cyan().bold(),
-            repo.join(" ").dimmed()
-        );
-        let mut a = vec!["-S".to_string()];
+    // In dry-run we never touch the system; the AUR plan is printed by install().
+    if !opts.dry_run && (!repo.is_empty() || refresh) {
+        let mut a = vec![if refresh { "-Sy" } else { "-S" }.to_string()];
         if noconfirm {
             a.push("--noconfirm".into());
         }
-        a.extend(repo);
+        if !repo.is_empty() {
+            println!(
+                "{} installing repo packages: {}",
+                "vouch:".bright_cyan().bold(),
+                repo.join(" ").dimmed()
+            );
+            a.extend(repo);
+        }
         run_pacman_raw(&a, true)?;
     }
     if !aur.is_empty() {
-        install(&aur, false, noconfirm, false, false, false, false)?;
+        install(
+            &aur,
+            opts.force,
+            noconfirm || opts.yes,
+            opts.dry_run,
+            opts.allow_build_network,
+            opts.rmdeps,
+            opts.no_sandbox,
+        )?;
     }
     Ok(())
 }
