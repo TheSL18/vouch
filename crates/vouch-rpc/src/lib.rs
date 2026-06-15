@@ -12,6 +12,12 @@ const RPC_BASE: &str = "https://aur.archlinux.org/rpc/v5";
 const USER_AGENT: &str = concat!("vouch/", env!("CARGO_PKG_VERSION"));
 
 /// A shared HTTP agent using the system's native TLS (OpenSSL), built once.
+///
+/// Connection pooling is disabled on purpose. The AUR closes idle keep-alive
+/// connections, and `vouch` makes AUR queries with long gaps in between (e.g.
+/// after running `pacman -S` for several seconds during an upgrade). Reusing a
+/// connection the server already closed surfaces as a "Unexpected EOF" — so we
+/// open a fresh connection per request instead.
 fn agent() -> &'static ureq::Agent {
     use std::sync::OnceLock;
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
@@ -19,6 +25,8 @@ fn agent() -> &'static ureq::Agent {
         let connector = native_tls::TlsConnector::new().expect("initialize native-tls");
         ureq::AgentBuilder::new()
             .tls_connector(std::sync::Arc::new(connector))
+            .max_idle_connections(0)
+            .max_idle_connections_per_host(0)
             .build()
     })
 }
@@ -131,8 +139,14 @@ fn parse_envelope(body: &str) -> Result<Vec<PackageMeta>> {
 /// GET `url` and parse the standard RPC envelope.
 #[allow(clippy::result_large_err)]
 fn get(url: &str) -> Result<Vec<PackageMeta>> {
-    let body = execute(|| agent().get(url).set("User-Agent", USER_AGENT).call())
-        .context("querying AUR RPC")?;
+    let body = execute(|| {
+        agent()
+            .get(url)
+            .set("User-Agent", USER_AGENT)
+            .set("Connection", "close")
+            .call()
+    })
+    .context("querying AUR RPC")?;
     parse_envelope(&body)
 }
 

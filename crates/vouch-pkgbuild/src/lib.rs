@@ -17,6 +17,12 @@ const CGIT_PLAIN: &str = "https://aur.archlinux.org/cgit/aur.git/plain";
 const USER_AGENT: &str = concat!("vouch/", env!("CARGO_PKG_VERSION"));
 
 /// A shared HTTP agent using the system's native TLS (OpenSSL), built once.
+///
+/// Connection pooling is disabled on purpose: the AUR closes idle keep-alive
+/// connections, and recipe fetches can happen long after the previous AUR
+/// request (e.g. after a multi-second `pacman -S`). Reusing a connection the
+/// server already closed surfaces as "Unexpected EOF", so we open a fresh one
+/// per request.
 fn agent() -> &'static ureq::Agent {
     use std::sync::OnceLock;
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
@@ -24,6 +30,8 @@ fn agent() -> &'static ureq::Agent {
         let connector = native_tls::TlsConnector::new().expect("initialize native-tls");
         ureq::AgentBuilder::new()
             .tls_connector(std::sync::Arc::new(connector))
+            .max_idle_connections(0)
+            .max_idle_connections_per_host(0)
             .build()
     })
 }
@@ -59,13 +67,33 @@ impl SourceBundle {
 fn fetch_plain(package_base: &str, file: &str) -> Result<String> {
     // cgit `plain` view: .../plain/<file>?h=<package_base>
     let url = format!("{CGIT_PLAIN}/{file}?h={package_base}");
-    let resp = agent()
-        .get(&url)
-        .set("User-Agent", USER_AGENT)
-        .call()
-        .with_context(|| format!("fetching {file} for {package_base}"))?;
-    resp.into_string()
-        .with_context(|| format!("reading {file} body for {package_base}"))
+    // Retry a few times on transient transport/EOF errors (the AUR occasionally
+    // resets connections); HTTP status errors are not retried.
+    let mut delay = std::time::Duration::from_millis(200);
+    let mut last = String::new();
+    for attempt in 1..=4 {
+        match agent()
+            .get(&url)
+            .set("User-Agent", USER_AGENT)
+            .set("Connection", "close")
+            .call()
+        {
+            Ok(resp) => {
+                return resp
+                    .into_string()
+                    .with_context(|| format!("reading {file} body for {package_base}"));
+            }
+            Err(ureq::Error::Status(code, _)) => {
+                bail!("fetching {file} for {package_base}: HTTP {code}");
+            }
+            Err(e) => last = e.to_string(),
+        }
+        if attempt < 4 {
+            std::thread::sleep(delay);
+            delay = (delay * 3).min(std::time::Duration::from_secs(2));
+        }
+    }
+    bail!("fetching {file} for {package_base} failed after retries: {last}")
 }
 
 /// Fetch the PKGBUILD (by package base) plus any `.install` hooks it declares.
