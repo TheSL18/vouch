@@ -478,17 +478,36 @@ fn install(
         pacman_sync(&deps)?;
     }
 
-    // 2. Build and install each AUR package in dependency order. Installing a
-    //    built dependency before its dependents lets the next build's makepkg
-    //    check pass — every package is vetted before it is built.
-    for name in &plan.aur_build_order {
-        println!("\n{} {}", "::".blue().bold(), name.bold());
-        let (dest, key, bundle, verdict) = prepare_aur_build(name, force, yes)?;
-        let build_network = gate_with_tofu(&store, &key, &bundle, &verdict, force, yes, allow_net)?;
-        announce_build(build_network);
-        let outcome = vouch_build::build_in_sandbox(&dest, build_network)?;
-        let as_dep = !plan.explicit_targets.contains(name);
-        pacman_install_file(&outcome.packages, as_dep)?;
+    // 2. Build and install one dependency layer at a time. Packages within a
+    //    layer are independent, so they build in parallel; the layer is then
+    //    installed serially, so the next layer's makepkg checks find their AUR
+    //    deps present. Every package is vetted (serially, in order) before any
+    //    building starts.
+    let parallelism = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+
+    for layer in &plan.layers {
+        // Vet + gate each package serially (clean, ordered output + approval),
+        // collecting the build jobs as (name, build-dir, allow-network).
+        let mut jobs: Vec<(String, PathBuf, bool)> = Vec::with_capacity(layer.len());
+        for name in layer {
+            println!("\n{} {}", "::".blue().bold(), name.bold());
+            let (dest, key, bundle, verdict) = prepare_aur_build(name, force, yes)?;
+            let build_network =
+                gate_with_tofu(&store, &key, &bundle, &verdict, force, yes, allow_net)?;
+            jobs.push((name.clone(), dest, build_network));
+        }
+
+        if jobs.len() == 1 {
+            // Single package: stream the build live (the common case).
+            let (name, dir, net) = &jobs[0];
+            announce_build(*net);
+            let outcome = vouch_build::build_in_sandbox(dir, *net)?;
+            pacman_install_file(&outcome.packages, !plan.explicit_targets.contains(name))?;
+        } else {
+            build_layer_parallel(&jobs, &plan.explicit_targets, parallelism)?;
+        }
     }
 
     println!(
@@ -496,6 +515,49 @@ fn install(
         "vouch:".bold(),
         "installation complete".green().bold()
     );
+    Ok(())
+}
+
+/// Build every job in a layer concurrently (bounded by `parallelism`), then
+/// print each build's captured log and install it — in the layer's order.
+fn build_layer_parallel(
+    jobs: &[(String, PathBuf, bool)],
+    explicit_targets: &[String],
+    parallelism: usize,
+) -> Result<()> {
+    println!(
+        "\n{} building {} packages in parallel…",
+        "vouch:".bold(),
+        jobs.len()
+    );
+
+    for chunk in jobs.chunks(parallelism.max(1)) {
+        // Each job builds in its own temp dir and only reads shared state
+        // (the read-only pacman db), so concurrent builds don't conflict.
+        let results: Vec<Result<(Vec<PathBuf>, String)>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = chunk
+                .iter()
+                .map(|(_, dir, net)| {
+                    scope.spawn(|| vouch_build::build_in_sandbox_captured(dir, *net))
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| match h.join() {
+                    Ok(res) => res.map(|(outcome, log)| (outcome.packages, log)),
+                    Err(_) => Err(anyhow::anyhow!("build thread panicked")),
+                })
+                .collect()
+        });
+
+        // Replay logs and install in order so output stays readable.
+        for ((name, _, _), result) in chunk.iter().zip(results) {
+            let (packages, log) = result.with_context(|| format!("building {name}"))?;
+            print!("{log}");
+            println!("{} {} {}", "vouch:".bold(), "built".green(), name.bold());
+            pacman_install_file(&packages, !explicit_targets.contains(name))?;
+        }
+    }
     Ok(())
 }
 
@@ -507,6 +569,15 @@ fn print_plan(plan: &vouch_resolve::ResolvedPlan) {
         plan.aur_build_order.len(),
         plan.aur_build_order.join(" → ").bold()
     );
+    if plan.layers.iter().any(|l| l.len() > 1) {
+        let shown = plan
+            .layers
+            .iter()
+            .map(|l| format!("[{}]", l.join(", ")))
+            .collect::<Vec<_>>()
+            .join(" → ");
+        println!("  parallel build layers: {}", shown.dimmed());
+    }
     if !plan.repo_deps.is_empty() {
         println!(
             "  repo dependencies (installed via pacman -S): {}",

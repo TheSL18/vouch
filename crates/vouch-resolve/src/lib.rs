@@ -38,6 +38,10 @@ pub struct ResolvedPlan {
     pub explicit_targets: Vec<String>,
     /// AUR packages to build, in dependency order (each after its AUR deps).
     pub aur_build_order: Vec<String>,
+    /// The build order grouped into dependency layers: every package in a layer
+    /// depends only on earlier layers, so a whole layer can be built in
+    /// parallel. `aur_build_order` is `layers` flattened.
+    pub layers: Vec<Vec<String>>,
     /// Repo/system dependencies, for display. `pacman` actually resolves these.
     pub repo_deps: Vec<String>,
 }
@@ -124,11 +128,45 @@ pub fn resolve_many(targets: &[&str]) -> Result<ResolvedPlan> {
     }
 
     let aur_build_order = topo_order(&aur_nodes, &edges)?;
+    let layers = build_layers(&aur_nodes, &edges);
     Ok(ResolvedPlan {
         explicit_targets,
         aur_build_order,
+        layers,
         repo_deps: repo_deps.into_iter().collect(),
     })
+}
+
+/// Group the AUR nodes into dependency layers: layer *n* contains every package
+/// all of whose AUR dependencies are in layers `< n`. Packages within a layer
+/// are independent and can be built in parallel. Deterministic (each layer is
+/// sorted). Assumes an acyclic graph (the caller has run [`topo_order`]).
+fn build_layers(
+    nodes: &BTreeSet<String>,
+    edges: &BTreeMap<String, BTreeSet<String>>,
+) -> Vec<Vec<String>> {
+    let mut assigned: BTreeSet<String> = BTreeSet::new();
+    let mut layers: Vec<Vec<String>> = Vec::new();
+    while assigned.len() < nodes.len() {
+        let layer: Vec<String> = nodes
+            .iter()
+            .filter(|n| !assigned.contains(*n))
+            .filter(|n| {
+                edges
+                    .get(*n)
+                    .is_none_or(|deps| deps.iter().all(|d| assigned.contains(d)))
+            })
+            .cloned()
+            .collect();
+        if layer.is_empty() {
+            break; // defensive: a cycle would stall here, but topo_order rejects them
+        }
+        for n in &layer {
+            assigned.insert(n.clone());
+        }
+        layers.push(layer);
+    }
+    layers
 }
 
 /// An installed AUR package with a newer version available upstream.
@@ -257,5 +295,19 @@ mod tests {
         let n = nodes(&["a", "b"]);
         let e = edges(&[("a", &["b"]), ("b", &["a"])]);
         assert!(topo_order(&n, &e).is_err());
+    }
+
+    #[test]
+    fn layers_group_independent_packages() {
+        // a -> b -> c, plus an independent d.
+        let n = nodes(&["a", "b", "c", "d"]);
+        let e = edges(&[("a", &["b"]), ("b", &["c"])]);
+        let layers = build_layers(&n, &e);
+        // c and d have no deps -> layer 0; b -> layer 1; a -> layer 2.
+        assert_eq!(layers, vec![vec!["c", "d"], vec!["b"], vec!["a"]]);
+        // Flattening a layering is always a valid build order.
+        let flat: Vec<String> = layers.into_iter().flatten().collect();
+        let pos = |x: &str| flat.iter().position(|s| s == x).unwrap();
+        assert!(pos("c") < pos("b") && pos("b") < pos("a"));
     }
 }

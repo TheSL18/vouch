@@ -87,10 +87,11 @@ For an AUR install, `vouch`:
 3. **Installs the repo dependencies** with `pacman -S --asdeps` (resolved to
    concrete packages via libalpm), so each build's `makepkg` finds its declared
    dependencies — `vouch` never lets `makepkg` fetch them itself.
-4. **Builds** each package in dependency order inside a network-denied
+4. **Builds** the packages in dependency layers inside a network-denied
    bubblewrap sandbox: sources are fetched and checksum-verified with the
-   network on, then `build()`/`package()` run with the network **off**. Each
-   built AUR dependency is installed before its dependents are built.
+   network on, then `build()`/`package()` run with the network **off**.
+   Independent packages in the same layer build in parallel; each built AUR
+   dependency is installed before the next layer (its dependents) is built.
 5. **Installs** the built packages with `pacman -U`.
 
 ## Build
@@ -135,5 +136,5 @@ vouch-cli        the `vouch` binary
 - [x] ALPM integration (precise repo-vs-AUR via libalpm, installed versions)
 - [x] `vouch upgrade`: AUR-layer `-Syu`
 - [x] Dependency provisioning: install repo + built-AUR deps so real builds work
-- [ ] Parallel builds of independent dependency-graph branches
+- [x] Parallel builds of independent dependency-graph branches (by layer)
 - [ ] Optionally remove make-only dependencies after building (`pacman -Rns`)

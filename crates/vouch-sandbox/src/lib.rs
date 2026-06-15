@@ -160,6 +160,19 @@ impl Sandbox {
         cmd.status()
             .with_context(|| format!("failed to launch sandbox via {BWRAP}"))
     }
+
+    /// Run `program args...` in the sandbox capturing its combined output.
+    /// Used for parallel builds, where interleaved live output would be unreadable.
+    pub fn output<I, S>(&self, program: &str, args: I) -> Result<std::process::Output>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let mut cmd = self.command(program, args)?;
+        cmd.stdin(Stdio::null());
+        cmd.output()
+            .with_context(|| format!("failed to launch sandbox via {BWRAP}"))
+    }
 }
 
 /// The minimal environment every sandboxed command starts with.

@@ -86,6 +86,59 @@ pub fn build_in_sandbox(pkgdir: &Path, allow_build_network: bool) -> Result<Buil
     Ok(BuildOutcome { packages })
 }
 
+/// Like [`build_in_sandbox`], but captures the build's combined output and
+/// returns it alongside the outcome instead of streaming it live. Intended for
+/// parallel builds, where interleaved live output from several `makepkg`
+/// processes would be unreadable. On failure the captured log is included in
+/// the error.
+pub fn build_in_sandbox_captured(
+    pkgdir: &Path,
+    allow_build_network: bool,
+) -> Result<(BuildOutcome, String)> {
+    if !vouch_sandbox::available() {
+        bail!(
+            "secure build sandbox unavailable (bwrap missing or unprivileged user \
+             namespaces disabled). Refusing to build."
+        );
+    }
+    let pkgdir = pkgdir
+        .canonicalize()
+        .with_context(|| format!("package directory {}", pkgdir.display()))?;
+    if !pkgdir.join("PKGBUILD").is_file() {
+        bail!("no PKGBUILD found in {}", pkgdir.display());
+    }
+
+    let mut log = String::new();
+    let mut record = |out: &std::process::Output| {
+        log.push_str(&String::from_utf8_lossy(&out.stdout));
+        log.push_str(&String::from_utf8_lossy(&out.stderr));
+    };
+
+    let verify = Sandbox::new(&pkgdir)
+        .allow_network(true)
+        .output(MAKEPKG, ["--verifysource", "--nodeps", "--noconfirm"])
+        .context("source-verification phase")?;
+    record(&verify);
+    if !verify.status.success() {
+        bail!("source download / integrity verification failed:\n{log}");
+    }
+
+    let build = Sandbox::new(&pkgdir)
+        .allow_network(allow_build_network)
+        .output(MAKEPKG, ["--noconfirm", "-f"])
+        .context("sandboxed build phase")?;
+    record(&build);
+    if !build.status.success() {
+        bail!("build failed inside the sandbox:\n{log}");
+    }
+
+    let packages = collect_packages(&pkgdir)?;
+    if packages.is_empty() {
+        bail!("build reported success but produced no package artifact");
+    }
+    Ok((BuildOutcome { packages }, log))
+}
+
 fn collect_packages(dir: &Path) -> Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     for entry in fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
