@@ -49,6 +49,10 @@ pub struct ReviewRecord {
     pub approved_at: i64,
     /// The risk score at approval time (for context on later changes).
     pub score_at_approval: u32,
+    /// Whether the user opted this package into build-time network access.
+    /// Tied to this exact recipe: a changed recipe must re-decide.
+    #[serde(default)]
+    pub build_network: bool,
     /// The exact files approved, so a later diff can be rendered.
     pub files: Vec<ReviewedFile>,
 }
@@ -129,6 +133,7 @@ impl ReviewStore {
         files: Vec<ReviewedFile>,
         score: u32,
         now: i64,
+        build_network: bool,
     ) -> Result<ReviewRecord> {
         fs::create_dir_all(&self.root)
             .with_context(|| format!("creating review store {}", self.root.display()))?;
@@ -139,6 +144,7 @@ impl ReviewStore {
             fingerprint: fingerprint(&files),
             approved_at: now,
             score_at_approval: score,
+            build_network,
             files,
         };
         let path = self.record_path(package);
@@ -305,7 +311,7 @@ mod tests {
             ReviewStatus::New
         ));
 
-        store.approve("foo", v1.clone(), 8, 1000).unwrap();
+        store.approve("foo", v1.clone(), 8, 1000, false).unwrap();
         assert!(matches!(
             store.status("foo", &v1).unwrap(),
             ReviewStatus::Unchanged { .. }
@@ -343,7 +349,7 @@ mod tests {
     fn forget_removes_record() {
         let (store, dir) = store_in("forget");
         let v = recipe("post_install() { :; }\n");
-        store.approve("bar", v, 0, 1).unwrap();
+        store.approve("bar", v, 0, 1, false).unwrap();
         assert!(store.forget("bar").unwrap());
         assert!(!store.forget("bar").unwrap());
         assert!(matches!(

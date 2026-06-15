@@ -61,6 +61,11 @@ vouch: REVIEW REQUIRED needs your review before installing (risk 31/100)
 - `vouch ioc` — show loaded indicators of compromise; `vouch ioc --import
   <file.json>` merges a community feed (e.g. `aur-malware-check`) into your
   local indicators.
+- **Build-time network opt-in**: for recipes that legitimately fetch at build
+  time (electron/npm/cargo/go), `--allow-build-network` keeps the network on
+  during the build phase. It is per-package, requires the package to still pass
+  vetting, is remembered for the *unchanged* recipe (a change re-decides it),
+  and prints a clear reduced-isolation warning.
 
 ### Roadmap
 
@@ -69,7 +74,7 @@ vouch: REVIEW REQUIRED needs your review before installing (risk 31/100)
 - [x] TOFU review state + change-diff gating
 - [x] `vouch install`: recursive dependency resolution + build order + pacman
 - [x] IoC / threat-intel feed checks (built-in + importable)
-- [ ] Per-package opt-in for build-time network (electron/npm packages)
+- [x] Per-package opt-in for build-time network (electron/npm packages)
 - [ ] ALPM integration (precise repo-vs-AUR, installed-version checks)
 - [ ] In-sandbox dependency provisioning (drop `--nodeps`)
 

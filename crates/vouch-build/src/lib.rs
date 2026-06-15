@@ -30,9 +30,16 @@ pub struct BuildOutcome {
     pub packages: Vec<PathBuf>,
 }
 
-/// Build the package whose recipe lives in `pkgdir`, enforcing the
-/// network-denied build phase. `pkgdir` must contain a `PKGBUILD`.
-pub fn build_in_sandbox(pkgdir: &Path) -> Result<BuildOutcome> {
+/// Build the package whose recipe lives in `pkgdir`. `pkgdir` must contain a
+/// `PKGBUILD`.
+///
+/// `allow_build_network` controls the build phase only: when `false` (the
+/// secure default) `prepare()`/`build()`/`package()` run with **no network**.
+/// When `true` — an explicit, per-package opt-in for recipes that genuinely
+/// fetch at build time (electron/npm/cargo/go) — the build phase keeps network
+/// access. The package is still fully vetted; only the runtime isolation is
+/// relaxed, by deliberate choice.
+pub fn build_in_sandbox(pkgdir: &Path, allow_build_network: bool) -> Result<BuildOutcome> {
     if !vouch_sandbox::available() {
         bail!(
             "secure build sandbox unavailable (bwrap missing or unprivileged user \
@@ -56,11 +63,11 @@ pub fn build_in_sandbox(pkgdir: &Path) -> Result<BuildOutcome> {
         bail!("source download / integrity verification failed");
     }
 
-    // Phase 2: extract, prepare, build, package — NETWORK DENIED. `-f` so a
-    // rebuild of an already-vouched package overwrites the stale artifact
-    // instead of erroring out.
+    // Phase 2: extract, prepare, build, package. Network denied by default;
+    // allowed only by explicit per-package opt-in. `-f` so a rebuild of an
+    // already-vouched package overwrites the stale artifact instead of erroring.
     let status = Sandbox::new(&pkgdir)
-        .allow_network(false)
+        .allow_network(allow_build_network)
         .run(MAKEPKG, ["--noconfirm", "--nodeps", "-f"])
         .context("sandboxed build phase")?;
     if !status.success() {

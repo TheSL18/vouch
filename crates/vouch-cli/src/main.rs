@@ -54,6 +54,11 @@ enum Command {
         /// Proceed past a REVIEW verdict, or accept a changed recipe.
         #[arg(long)]
         yes: bool,
+        /// Allow this package's build phase to access the network (for recipes
+        /// that genuinely fetch at build time, e.g. electron/npm). Per-package
+        /// and remembered for the unchanged recipe; reduces build isolation.
+        #[arg(long)]
+        allow_build_network: bool,
     },
     /// Resolve dependencies, vet every AUR package, build them in order, and
     /// install. Aliased as `-S` in spirit.
@@ -71,6 +76,10 @@ enum Command {
         /// Resolve and vet everything, print the plan, but build/install nothing.
         #[arg(long)]
         dry_run: bool,
+        /// Allow the build phase of these packages to access the network
+        /// (electron/npm-style recipes). Applies to every package in this run.
+        #[arg(long)]
+        allow_build_network: bool,
     },
     /// Forget the stored review record for a package (re-arms TOFU for it).
     Forget {
@@ -93,7 +102,12 @@ fn main() -> ExitCode {
             Ok(verdict) => exit_code_for(verdict.decision),
             Err(e) => fail(e),
         },
-        Command::Build { target, force, yes } => match build(&target, force, yes) {
+        Command::Build {
+            target,
+            force,
+            yes,
+            allow_build_network,
+        } => match build(&target, force, yes, allow_build_network) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => fail(e),
         },
@@ -102,7 +116,8 @@ fn main() -> ExitCode {
             force,
             yes,
             dry_run,
-        } => match install(&targets, force, yes, dry_run) {
+            allow_build_network,
+        } => match install(&targets, force, yes, dry_run, allow_build_network) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => fail(e),
         },
@@ -188,7 +203,7 @@ fn show_review_status(key: &str, bundle: &SourceBundle) {
 // build
 // ----------------------------------------------------------------------------
 
-fn build(target: &str, force: bool, yes: bool) -> Result<()> {
+fn build(target: &str, force: bool, yes: bool, allow_net: bool) -> Result<()> {
     // Refuse early if we can't sandbox — never build unsandboxed.
     if !vouch_sandbox::available() {
         bail!(
@@ -210,11 +225,12 @@ fn build(target: &str, force: bool, yes: bool) -> Result<()> {
     };
 
     // Authoritative gate on exactly what we will build: verdict + TOFU. Records
-    // the approval once consent is given.
-    gate_with_tofu(&store, &key, &bundle, &verdict, force, yes)?;
+    // the approval once consent is given, and resolves the effective
+    // build-network decision (flag this run, or remembered from last vouch).
+    let build_network = gate_with_tofu(&store, &key, &bundle, &verdict, force, yes, allow_net)?;
 
-    println!("{} building in a network-denied sandbox…", "vouch:".bold());
-    let outcome = vouch_build::build_in_sandbox(&build_dir)?;
+    announce_build(build_network);
+    let outcome = vouch_build::build_in_sandbox(&build_dir, build_network)?;
 
     println!();
     println!("{} {}", "vouch:".bold(), "build complete".green().bold());
@@ -280,8 +296,12 @@ fn gate_with_tofu(
     verdict: &Verdict,
     force: bool,
     yes: bool,
-) -> Result<()> {
+    allow_net: bool,
+) -> Result<bool> {
     let files = reviewed_files(bundle);
+    // Network is allowed if requested this run, or remembered from the last
+    // approval of this *unchanged* recipe.
+    let mut build_network = allow_net;
     match store.status(key, &files)? {
         ReviewStatus::New => {
             println!(
@@ -297,6 +317,7 @@ fn gate_with_tofu(
                 human_since(record.approved_at),
                 record.score_at_approval
             );
+            build_network = build_network || record.build_network;
             // Even an unchanged recipe is re-checked: a newly-added rule or IoC
             // can move a previously-vouched recipe to REFUSED.
             if verdict.decision == Decision::Refused {
@@ -325,9 +346,22 @@ fn gate_with_tofu(
 
     // We reached here without bailing → consent given. Record it.
     store
-        .approve(key, files, verdict.score, now_unix())
+        .approve(key, files, verdict.score, now_unix(), build_network)
         .context("recording review approval")?;
-    Ok(())
+    Ok(build_network)
+}
+
+/// Announce the build phase, making reduced isolation impossible to miss.
+fn announce_build(build_network: bool) {
+    if build_network {
+        println!(
+            "{} building with {} (reduced isolation — recipe is still vetted)",
+            "vouch:".bold(),
+            "NETWORK ACCESS".yellow().bold()
+        );
+    } else {
+        println!("{} building in a network-denied sandbox…", "vouch:".bold());
+    }
 }
 
 /// Enforce the static verdict before any build happens.
@@ -367,7 +401,13 @@ fn gate(verdict: &Verdict, force: bool, yes: bool) -> Result<()> {
 // install (-S): resolve -> vet every AUR package -> build in order -> pacman
 // ----------------------------------------------------------------------------
 
-fn install(targets: &[String], force: bool, yes: bool, dry_run: bool) -> Result<()> {
+fn install(
+    targets: &[String],
+    force: bool,
+    yes: bool,
+    dry_run: bool,
+    allow_net: bool,
+) -> Result<()> {
     let store = ReviewStore::open_default().context("opening the review store")?;
     if !dry_run && !vouch_sandbox::available() {
         bail!(
@@ -391,8 +431,9 @@ fn install(targets: &[String], force: bool, yes: bool, dry_run: bool) -> Result<
             continue;
         }
         let (dest, key, bundle, verdict) = prepare_aur_build(name, force, yes)?;
-        gate_with_tofu(&store, &key, &bundle, &verdict, force, yes)?;
-        let outcome = vouch_build::build_in_sandbox(&dest)?;
+        let build_network = gate_with_tofu(&store, &key, &bundle, &verdict, force, yes, allow_net)?;
+        announce_build(build_network);
+        let outcome = vouch_build::build_in_sandbox(&dest, build_network)?;
         built.push((name.clone(), outcome.packages));
     }
 
