@@ -25,11 +25,12 @@
   for the unchanged recipe, and reduces build isolation (a clear notice prints).
 - `--rmdeps` — after installing, remove build-only dependencies (make/check deps
   that aren't needed at runtime) that nothing else requires (`pacman -Rns`).
-- `--devel` (`upgrade` only) — also rebuild installed VCS packages (`-git`,
-  `-svn`, …) whose upstream has new commits. vouch compares the upstream `HEAD`
-  to the commit baked into the installed version. (Packages built from a VCS
-  source but versioned like a release aren't auto-detected — rebuild those with
-  `vouch -S <pkg>`.)
+- `--no-devel` (`upgrade` only) — **VCS packages are checked by default**:
+  `vouch upgrade` and `vouch -Syu` also rebuild installed `-git`/`-svn`/… packages
+  whose upstream has new commits (comparing the upstream `HEAD` to the commit
+  baked into the installed version, one `git ls-remote` each). Pass `--no-devel`
+  to skip that check for speed. (Packages built from a VCS source but versioned
+  like a release aren't auto-detected — rebuild those with `vouch -S <pkg>`.)
 
 ## Verdicts and exit codes
 

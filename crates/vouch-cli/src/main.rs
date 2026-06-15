@@ -121,10 +121,10 @@ enum Command {
         /// needed (`pacman -Rns`).
         #[arg(long)]
         rmdeps: bool,
-        /// Also rebuild installed VCS packages (`-git`, `-svn`, …) whose
-        /// upstream has new commits.
+        /// Skip checking VCS packages (`-git`, `-svn`, …) for new upstream
+        /// commits. By default they are checked (a `git ls-remote` each).
         #[arg(long)]
-        devel: bool,
+        no_devel: bool,
     },
     /// Forget the stored review record for a package (re-arms TOFU for it).
     Forget {
@@ -189,8 +189,8 @@ fn main() -> ExitCode {
             dry_run,
             allow_build_network,
             rmdeps,
-            devel,
-        } => match upgrade(force, yes, dry_run, allow_build_network, rmdeps, devel) {
+            no_devel,
+        } => match upgrade(force, yes, dry_run, allow_build_network, rmdeps, !no_devel) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => fail(e),
         },
@@ -266,7 +266,8 @@ fn full_upgrade(targets: &[String], noconfirm: bool) -> Result<()> {
     run_pacman_raw(&a, true)?;
 
     println!("{} upgrading AUR packages…", "vouch:".bright_cyan().bold());
-    upgrade(false, noconfirm, false, false, false, false)?;
+    // -Syu is a full upgrade, so include VCS/devel packages by default.
+    upgrade(false, noconfirm, false, false, false, true)?;
 
     if !targets.is_empty() {
         install_targets(targets, noconfirm)?;
@@ -962,13 +963,6 @@ fn upgrade(
             "{} all AUR packages are up to date",
             "vouch:".bright_cyan().bold()
         );
-        if !devel {
-            println!(
-                "  {} pass {} to also check VCS (-git) packages for new commits",
-                "→".dimmed(),
-                "--devel".bold()
-            );
-        }
         return Ok(());
     }
 
