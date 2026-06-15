@@ -106,6 +106,13 @@ pub fn info(pkg: &str) -> Result<Option<PackageMeta>> {
         .next())
 }
 
+/// Search the AUR by name and description. Returns matching packages (without
+/// dependency arrays, which only the `info` endpoint provides).
+pub fn search(query: &str) -> Result<Vec<PackageMeta>> {
+    let url = format!("{RPC_BASE}/search/{}?by=name-desc", urlencode(query));
+    get(&url).with_context(|| format!("searching the AUR for {query:?}"))
+}
+
 /// Look up many packages in one request. The result contains only the names
 /// that exist in the AUR, in unspecified order.
 pub fn info_many(pkgs: &[&str]) -> Result<Vec<PackageMeta>> {

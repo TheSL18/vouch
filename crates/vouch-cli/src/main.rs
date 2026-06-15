@@ -81,6 +81,10 @@ enum Command {
         /// (electron/npm-style recipes). Applies to every package in this run.
         #[arg(long)]
         allow_build_network: bool,
+        /// After installing, remove build-only dependencies that are no longer
+        /// needed (`pacman -Rns`).
+        #[arg(long)]
+        rmdeps: bool,
     },
     /// Upgrade installed AUR packages whose AUR version is newer (like `-Syu`
     /// for the AUR layer). Vets and rebuilds each in the sandbox before install.
@@ -98,11 +102,22 @@ enum Command {
         /// Allow the build phase to access the network (electron/npm recipes).
         #[arg(long)]
         allow_build_network: bool,
+        /// After installing, remove build-only dependencies that are no longer
+        /// needed (`pacman -Rns`).
+        #[arg(long)]
+        rmdeps: bool,
     },
     /// Forget the stored review record for a package (re-arms TOFU for it).
     Forget {
         /// Package name (or local directory name) to forget.
         package: String,
+    },
+    /// Search the AUR by name and description.
+    #[command(visible_alias = "s")]
+    Search {
+        /// Search terms.
+        #[arg(required = true)]
+        query: Vec<String>,
     },
     /// Show loaded indicators of compromise, or import a feed.
     Ioc {
@@ -135,7 +150,8 @@ fn main() -> ExitCode {
             yes,
             dry_run,
             allow_build_network,
-        } => match install(&targets, force, yes, dry_run, allow_build_network) {
+            rmdeps,
+        } => match install(&targets, force, yes, dry_run, allow_build_network, rmdeps) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => fail(e),
         },
@@ -144,11 +160,16 @@ fn main() -> ExitCode {
             yes,
             dry_run,
             allow_build_network,
-        } => match upgrade(force, yes, dry_run, allow_build_network) {
+            rmdeps,
+        } => match upgrade(force, yes, dry_run, allow_build_network, rmdeps) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => fail(e),
         },
         Command::Forget { package } => match forget(&package) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => fail(e),
+        },
+        Command::Search { query } => match search(&query.join(" ")) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => fail(e),
         },
@@ -434,6 +455,7 @@ fn install(
     yes: bool,
     dry_run: bool,
     allow_net: bool,
+    rmdeps: bool,
 ) -> Result<()> {
     let store = ReviewStore::open_default().context("opening the review store")?;
     if !dry_run && !vouch_sandbox::available() {
@@ -457,6 +479,14 @@ fn install(
             "vouch:".bold()
         );
         print_pacman_plan(&plan);
+        if rmdeps && !plan.make_only_deps.is_empty() {
+            let sudo = if is_root() { "" } else { "sudo " };
+            println!(
+                "  {} {sudo}pacman -Rns {} (build-only deps, if unneeded)",
+                "would run:".dimmed(),
+                plan.make_only_deps.join(" ")
+            );
+        }
         return Ok(());
     }
 
@@ -515,6 +545,48 @@ fn install(
         "vouch:".bold(),
         "installation complete".green().bold()
     );
+
+    // Optionally clean up build-only dependencies that nothing needs now.
+    if rmdeps {
+        remove_unneeded_make_deps(&plan.make_only_deps)?;
+    }
+    Ok(())
+}
+
+/// Remove build-only dependencies that are now unrequired (`pacman -Rns`).
+/// Best-effort: skips anything still needed and never fails the install.
+fn remove_unneeded_make_deps(make_only: &[String]) -> Result<()> {
+    if make_only.is_empty() {
+        return Ok(());
+    }
+    // Re-open ALPM so it reflects everything just installed.
+    let Ok(db) = vouch_alpm::Db::open() else {
+        return Ok(());
+    };
+    let removable: Vec<&str> = make_only
+        .iter()
+        .filter(|n| db.is_unrequired(n))
+        .map(String::as_str)
+        .collect();
+    if removable.is_empty() {
+        return Ok(());
+    }
+    println!(
+        "{} removing build-only dependencies: {}",
+        "vouch:".bold(),
+        removable.join(" ").dimmed()
+    );
+    let status = pacman_cmd()
+        .args(["-Rns", "--noconfirm"])
+        .args(&removable)
+        .status()
+        .context("running pacman -Rns")?;
+    if !status.success() {
+        eprintln!(
+            "{} could not remove some build-only dependencies (still in use?)",
+            "warning:".yellow().bold()
+        );
+    }
     Ok(())
 }
 
@@ -706,7 +778,7 @@ fn confirm(prompt: &str) -> Result<bool> {
 // upgrade (-Syu for the AUR layer)
 // ----------------------------------------------------------------------------
 
-fn upgrade(force: bool, yes: bool, dry_run: bool, allow_net: bool) -> Result<()> {
+fn upgrade(force: bool, yes: bool, dry_run: bool, allow_net: bool, rmdeps: bool) -> Result<()> {
     let upgrades = vouch_resolve::find_upgrades().context("checking for AUR upgrades")?;
     if upgrades.is_empty() {
         println!("{} all AUR packages are up to date", "vouch:".bold());
@@ -730,7 +802,60 @@ fn upgrade(force: bool, yes: bool, dry_run: bool, allow_net: bool) -> Result<()>
     println!();
 
     let targets: Vec<String> = upgrades.into_iter().map(|u| u.name).collect();
-    install(&targets, force, yes, dry_run, allow_net)
+    install(&targets, force, yes, dry_run, allow_net, rmdeps)
+}
+
+// ----------------------------------------------------------------------------
+// search
+// ----------------------------------------------------------------------------
+
+fn search(query: &str) -> Result<()> {
+    let mut results = vouch_rpc::search(query).context("searching the AUR")?;
+    if results.is_empty() {
+        println!("{} no AUR packages match {query:?}", "vouch:".bold());
+        return Ok(());
+    }
+    // Most-voted first, then by popularity.
+    results.sort_by(|a, b| {
+        b.num_votes.cmp(&a.num_votes).then(
+            b.popularity
+                .partial_cmp(&a.popularity)
+                .unwrap_or(std::cmp::Ordering::Equal),
+        )
+    });
+
+    let alpm = vouch_alpm::Db::open().ok();
+    const LIMIT: usize = 50;
+    let total = results.len();
+    for p in results.into_iter().take(LIMIT) {
+        let ood = if p.out_of_date.is_some() {
+            " [out-of-date]".red().to_string()
+        } else {
+            String::new()
+        };
+        let installed = alpm
+            .as_ref()
+            .and_then(|a| a.installed_version(&p.name))
+            .map(|v| format!(" [installed: {v}]").yellow().to_string())
+            .unwrap_or_default();
+        println!(
+            "{}/{} {}  ({}, {:.2}){}{}",
+            "aur".blue(),
+            p.name.bold(),
+            p.version.green(),
+            format!("+{}", p.num_votes).dimmed(),
+            p.popularity,
+            ood,
+            installed
+        );
+        if let Some(d) = &p.description {
+            println!("    {d}");
+        }
+    }
+    if total > LIMIT {
+        println!("  {} {} more results", "…".dimmed(), total - LIMIT);
+    }
+    Ok(())
 }
 
 // ----------------------------------------------------------------------------

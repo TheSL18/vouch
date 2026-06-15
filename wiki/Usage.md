@@ -4,6 +4,7 @@
 
 | Command | What it does |
 |---------|--------------|
+| `vouch search <query>` | Search the AUR by name and description (most-voted first). Alias: `s`. |
 | `vouch audit <pkg>` | Fetch a package's AUR metadata + recipe and print a verdict. **Read-only** — never builds. |
 | `vouch build <pkg\|dir>` | Vet, gate, then build in the network-denied sandbox. Accepts an AUR name or a local directory with a `PKGBUILD`. Does not install. |
 | `vouch install <pkg…>` | Resolve the dependency graph, vet every AUR package, build in order, install with pacman. Alias: `i`. |
@@ -22,6 +23,8 @@
   recipes that legitimately fetch at build time, e.g. electron/npm). It is
   **per-package**, requires the package to still pass vetting, is **remembered**
   for the unchanged recipe, and reduces build isolation (a clear notice prints).
+- `--rmdeps` — after installing, remove build-only dependencies (make/check deps
+  that aren't needed at runtime) that nothing else requires (`pacman -Rns`).
 
 ## Verdicts and exit codes
 

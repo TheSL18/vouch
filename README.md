@@ -50,6 +50,7 @@ Any `Critical` finding refuses the package outright; otherwise the verdict is
 ## Commands
 
 ```console
+vouch search <query>         # search the AUR by name + description
 vouch audit <pkg>            # fetch + vet a package, print a verdict (read-only)
 vouch build <pkg|dir>        # vet, then build in the network-denied sandbox
 vouch install <pkg…>         # resolve deps, vet the whole tree, build in order, install
@@ -60,7 +61,8 @@ vouch forget <pkg>           # drop a stored approval (re-arms TOFU)
 
 Useful flags: `--dry-run` (plan only), `--yes` (accept REVIEW / a changed recipe),
 `--force` (override a REFUSED verdict — discouraged), `--allow-build-network`
-(let a recipe fetch at build time; per-package, remembered, reduces isolation).
+(let a recipe fetch at build time; per-package, remembered, reduces isolation),
+`--rmdeps` (remove build-only dependencies after installing).
 
 Exit codes: `0` vouched · `1` review required · `2` refused · `3` error.
 
@@ -137,4 +139,5 @@ vouch-cli        the `vouch` binary
 - [x] `vouch upgrade`: AUR-layer `-Syu`
 - [x] Dependency provisioning: install repo + built-AUR deps so real builds work
 - [x] Parallel builds of independent dependency-graph branches (by layer)
-- [ ] Optionally remove make-only dependencies after building (`pacman -Rns`)
+- [x] `vouch search` (AUR search)
+- [x] `--rmdeps`: remove build-only dependencies after installing

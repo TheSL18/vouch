@@ -67,6 +67,16 @@ impl Db {
             .map(|p| p.version().to_string())
     }
 
+    /// Whether `name` is installed and nothing else requires it (no package
+    /// depends on or optionally-depends on it) — i.e. it can be safely removed.
+    /// Returns `false` if it isn't installed.
+    pub fn is_unrequired(&self, name: &str) -> bool {
+        match self.handle.localdb().pkg(name) {
+            Ok(p) => p.required_by().is_empty() && p.optional_for().is_empty(),
+            Err(_) => false,
+        }
+    }
+
     /// Installed packages that no configured repository provides — i.e. the
     /// "foreign" packages, which on a normal system are exactly the ones that
     /// came from the AUR. Returns `(name, installed_version)`.

@@ -42,8 +42,11 @@ pub struct ResolvedPlan {
     /// depends only on earlier layers, so a whole layer can be built in
     /// parallel. `aur_build_order` is `layers` flattened.
     pub layers: Vec<Vec<String>>,
-    /// Repo/system dependencies, for display. `pacman` actually resolves these.
+    /// Repo/system dependencies (concrete provider package names).
     pub repo_deps: Vec<String>,
+    /// Repo dependencies needed *only* to build (make/check deps that are not
+    /// also runtime deps). Candidates for removal after install (`--rmdeps`).
+    pub make_only_deps: Vec<String>,
 }
 
 /// Resolve a single target. See [`resolve_many`].
@@ -56,7 +59,10 @@ pub fn resolve(target: &str) -> Result<ResolvedPlan> {
 pub fn resolve_many(targets: &[&str]) -> Result<ResolvedPlan> {
     let mut aur_nodes: BTreeSet<String> = BTreeSet::new();
     let mut edges: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    let mut repo_deps: BTreeSet<String> = BTreeSet::new();
+    // Repo providers split by how they're needed, so we can tell build-only
+    // dependencies (make/check) apart from runtime ones for `--rmdeps`.
+    let mut repo_runtime: BTreeSet<String> = BTreeSet::new();
+    let mut repo_build: BTreeSet<String> = BTreeSet::new();
     let mut metas: BTreeMap<String, PackageMeta> = BTreeMap::new();
     let mut queue: VecDeque<String> = VecDeque::new();
     let mut explicit_targets: Vec<String> = Vec::new();
@@ -85,16 +91,24 @@ pub fn resolve_many(targets: &[&str]) -> Result<ResolvedPlan> {
             .expect("queued packages always have cached metadata")
             .clone();
 
-        // Keep the original dep atoms (with version/soname) for the precise
-        // repo check, and a unique set of bare names for the AUR lookup.
-        let raw_deps: Vec<String> = meta.build_deps().map(str::to_string).collect();
-        let bare_names: BTreeSet<String> = raw_deps
+        // Runtime deps and build-time deps are classified the same way, but
+        // tracked separately so we know which repo packages are *only* needed
+        // to build (make/check, minus anything also needed at runtime).
+        let runtime_atoms: Vec<&str> = meta.depends.iter().map(String::as_str).collect();
+        let build_atoms: Vec<&str> = meta
+            .make_depends
             .iter()
+            .chain(&meta.check_depends)
+            .map(String::as_str)
+            .collect();
+
+        // One RPC call to learn which dep names exist in the AUR.
+        let bare_names: BTreeSet<String> = runtime_atoms
+            .iter()
+            .chain(&build_atoms)
             .map(|d| strip_version(d).to_string())
             .filter(|s| !s.is_empty())
             .collect();
-
-        // One RPC call to learn which of these even exist in the AUR.
         let dep_refs: Vec<&str> = bare_names.iter().map(String::as_str).collect();
         let in_aur = vouch_rpc::info_many(&dep_refs).context("classifying dependencies")?;
         let aur_names: BTreeSet<String> = in_aur.iter().map(|m| m.name.clone()).collect();
@@ -102,39 +116,85 @@ pub fn resolve_many(targets: &[&str]) -> Result<ResolvedPlan> {
             metas.entry(m.name.clone()).or_insert(m);
         }
 
-        let node_edges = edges.entry(pkg.clone()).or_default();
+        // Process runtime deps first so a dep listed as both runtime and make
+        // counts as runtime (and is never treated as build-only).
         let mut seen: BTreeSet<String> = BTreeSet::new();
-        for raw in &raw_deps {
-            let name = strip_version(raw).to_string();
-            if name.is_empty() || !seen.insert(name.clone()) {
-                continue;
-            }
-            // A dep is a build target only if the AUR has it AND no configured
-            // repo can satisfy it (the original atom keeps version precision).
-            // Resolve via libalpm: the provider is the concrete package name a
-            // repo would install (handles provides/versions/sonames).
-            let provider = alpm.as_ref().and_then(|a| a.provider(raw));
-            if aur_names.contains(&name) && provider.is_none() {
-                node_edges.insert(name.clone());
-                if aur_nodes.insert(name.clone()) {
-                    queue.push_back(name);
-                }
-            } else {
-                // Store the concrete provider name (falling back to the bare
-                // name) so it can be handed straight to `pacman -S`.
-                repo_deps.insert(provider.unwrap_or(name));
-            }
+        for &raw in &runtime_atoms {
+            classify_dep(
+                raw,
+                &aur_names,
+                alpm.as_ref(),
+                &mut seen,
+                &pkg,
+                &mut edges,
+                &mut aur_nodes,
+                &mut queue,
+                &mut repo_runtime,
+            );
+        }
+        for &raw in &build_atoms {
+            classify_dep(
+                raw,
+                &aur_names,
+                alpm.as_ref(),
+                &mut seen,
+                &pkg,
+                &mut edges,
+                &mut aur_nodes,
+                &mut queue,
+                &mut repo_build,
+            );
         }
     }
 
     let aur_build_order = topo_order(&aur_nodes, &edges)?;
     let layers = build_layers(&aur_nodes, &edges);
+    // Build-only deps: needed to build, never at runtime.
+    let make_only_deps: Vec<String> = repo_build.difference(&repo_runtime).cloned().collect();
+    let repo_deps: Vec<String> = repo_runtime.union(&repo_build).cloned().collect();
     Ok(ResolvedPlan {
         explicit_targets,
         aur_build_order,
         layers,
-        repo_deps: repo_deps.into_iter().collect(),
+        repo_deps,
+        make_only_deps,
     })
+}
+
+/// Classify one dependency atom: an AUR build target (recorded as a graph edge
+/// and queued) if the AUR has it and no repo satisfies it; otherwise a repo
+/// provider recorded into `repo_set`. `seen` dedups within the current package.
+#[allow(clippy::too_many_arguments)]
+fn classify_dep(
+    raw: &str,
+    aur_names: &BTreeSet<String>,
+    alpm: Option<&vouch_alpm::Db>,
+    seen: &mut BTreeSet<String>,
+    pkg: &str,
+    edges: &mut BTreeMap<String, BTreeSet<String>>,
+    aur_nodes: &mut BTreeSet<String>,
+    queue: &mut VecDeque<String>,
+    repo_set: &mut BTreeSet<String>,
+) {
+    let name = strip_version(raw).to_string();
+    if name.is_empty() || !seen.insert(name.clone()) {
+        return;
+    }
+    // The original atom keeps version precision for the provider lookup.
+    let provider = alpm.and_then(|a| a.provider(raw));
+    if aur_names.contains(&name) && provider.is_none() {
+        edges
+            .entry(pkg.to_string())
+            .or_default()
+            .insert(name.clone());
+        if aur_nodes.insert(name.clone()) {
+            queue.push_back(name);
+        }
+    } else {
+        // Concrete provider name (falling back to the bare name) so it can be
+        // handed straight to `pacman -S`.
+        repo_set.insert(provider.unwrap_or(name));
+    }
 }
 
 /// Group the AUR nodes into dependency layers: layer *n* contains every package

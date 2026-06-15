@@ -4,6 +4,7 @@
 
 | Comando | Qué hace |
 |---------|----------|
+| `vouch search <query>` | Busca en el AUR por nombre y descripción (más votados primero). Alias: `s`. |
 | `vouch audit <pkg>` | Baja los metadatos + recipe del AUR y muestra un veredicto. **Solo lectura** — no compila. |
 | `vouch build <pkg\|dir>` | Veta, aplica el gate y compila en el sandbox sin red. Acepta un nombre AUR o un directorio local con `PKGBUILD`. No instala. |
 | `vouch install <pkg…>` | Resuelve el grafo de dependencias, veta cada paquete AUR, compila en orden e instala con pacman. Alias: `i`. |
@@ -22,6 +23,8 @@
   recipes que sí necesitan descargar al compilar, p.ej. electron/npm). Es
   **por-paquete**, el paquete se sigue vetando, se **recuerda** para el recipe sin
   cambios, y reduce el aislamiento (se imprime un aviso claro).
+- `--rmdeps` — tras instalar, quita las dependencias solo-de-build (make/check que
+  no se necesitan en runtime) que nada más requiere (`pacman -Rns`).
 
 ## Veredictos y códigos de salida
 
