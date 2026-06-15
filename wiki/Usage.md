@@ -25,6 +25,11 @@
   for the unchanged recipe, and reduces build isolation (a clear notice prints).
 - `--rmdeps` — after installing, remove build-only dependencies (make/check deps
   that aren't needed at runtime) that nothing else requires (`pacman -Rns`).
+- `--no-sandbox` — build **without** the isolation sandbox. Some recipes can't
+  build under isolation (e.g. tools that need FUSE/unionfs, like the flutter-bin
+  wrapper used by some Flutter apps — you'll see `unionfs failed` in the sandbox).
+  With `--no-sandbox` the build runs unconfined; the package is **still vetted**
+  (trust + scan + IoC + TOFU), only the build-time isolation is dropped.
 - `--no-devel` (`upgrade` only) — **VCS packages are checked by default**:
   `vouch upgrade` and `vouch -Syu` also rebuild installed `-git`/`-svn`/… packages
   whose upstream has new commits (comparing the upstream `HEAD` to the commit

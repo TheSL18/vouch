@@ -86,6 +86,33 @@ pub fn build_in_sandbox(pkgdir: &Path, allow_build_network: bool) -> Result<Buil
     Ok(BuildOutcome { packages })
 }
 
+/// Build **without** the sandbox: run `makepkg` directly in `pkgdir` with full
+/// network and filesystem access. This is an explicit escape hatch for recipes
+/// that can't build under isolation (e.g. tools needing FUSE/unionfs like some
+/// flutter/electron wrappers). The package is still vetted beforehand; only the
+/// runtime confinement is dropped, by deliberate choice.
+pub fn build_unsandboxed(pkgdir: &Path) -> Result<BuildOutcome> {
+    let pkgdir = pkgdir
+        .canonicalize()
+        .with_context(|| format!("package directory {}", pkgdir.display()))?;
+    if !pkgdir.join("PKGBUILD").is_file() {
+        bail!("no PKGBUILD found in {}", pkgdir.display());
+    }
+    let status = std::process::Command::new(MAKEPKG)
+        .args(["--noconfirm", "-f"])
+        .current_dir(&pkgdir)
+        .status()
+        .context("running makepkg")?;
+    if !status.success() {
+        bail!("unsandboxed build failed");
+    }
+    let packages = collect_packages(&pkgdir)?;
+    if packages.is_empty() {
+        bail!("build reported success but produced no package artifact");
+    }
+    Ok(BuildOutcome { packages })
+}
+
 /// Like [`build_in_sandbox`], but captures the build's combined output and
 /// returns it alongside the outcome instead of streaming it live. Intended for
 /// parallel builds, where interleaved live output from several `makepkg`

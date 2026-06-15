@@ -63,7 +63,9 @@ Useful flags: `--dry-run` (plan only), `--yes` (accept REVIEW / a changed recipe
 `--force` (override a REFUSED verdict — discouraged), `--allow-build-network`
 (let a recipe fetch at build time; per-package, remembered, reduces isolation),
 `--rmdeps` (remove build-only dependencies after installing), `--no-devel`
-(`upgrade` only: skip the VCS/`-git` upstream-commit check, which is on by default).
+(`upgrade` only: skip the VCS/`-git` upstream-commit check, which is on by default),
+`--no-sandbox` (build without isolation, for recipes that need FUSE/unionfs like
+some flutter/electron packages — the recipe is still vetted).
 
 ### pacman-style syntax
 

@@ -25,6 +25,11 @@
   cambios, y reduce el aislamiento (se imprime un aviso claro).
 - `--rmdeps` — tras instalar, quita las dependencias solo-de-build (make/check que
   no se necesitan en runtime) que nada más requiere (`pacman -Rns`).
+- `--no-sandbox` — compila **sin** el sandbox de aislamiento. Algunos recipes no
+  compilan aislados (p.ej. los que necesitan FUSE/unionfs, como el wrapper de
+  flutter-bin que usan ciertas apps Flutter — verás `unionfs failed` en el sandbox).
+  Con `--no-sandbox` el build corre sin confinar; el paquete **se sigue vetando**
+  (trust + scan + IoC + TOFU), solo se quita el aislamiento del build.
 - `--no-devel` (solo `upgrade`) — **los paquetes VCS se revisan por defecto**:
   `vouch upgrade` y `vouch -Syu` también recompilan los `-git`/`-svn`/… instalados
   cuyo upstream tiene commits nuevos (compara el `HEAD` upstream con el commit

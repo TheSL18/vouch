@@ -75,6 +75,10 @@ enum Command {
         /// and remembered for the unchanged recipe; reduces build isolation.
         #[arg(long)]
         allow_build_network: bool,
+        /// Build without the isolation sandbox (for recipes needing FUSE/unionfs,
+        /// e.g. some flutter/electron packages). The package is still vetted.
+        #[arg(long)]
+        no_sandbox: bool,
     },
     /// Resolve dependencies, vet every AUR package, build them in order, and
     /// install. Aliased as `-S` in spirit.
@@ -100,6 +104,9 @@ enum Command {
         /// needed (`pacman -Rns`).
         #[arg(long)]
         rmdeps: bool,
+        /// Build without the isolation sandbox (for recipes needing FUSE/unionfs).
+        #[arg(long)]
+        no_sandbox: bool,
     },
     /// Upgrade installed AUR packages whose AUR version is newer (like `-Syu`
     /// for the AUR layer). Vets and rebuilds each in the sandbox before install.
@@ -125,6 +132,9 @@ enum Command {
         /// commits. By default they are checked (a `git ls-remote` each).
         #[arg(long)]
         no_devel: bool,
+        /// Build without the isolation sandbox (for recipes needing FUSE/unionfs).
+        #[arg(long)]
+        no_sandbox: bool,
     },
     /// Forget the stored review record for a package (re-arms TOFU for it).
     Forget {
@@ -168,7 +178,8 @@ fn main() -> ExitCode {
             force,
             yes,
             allow_build_network,
-        } => match build(&target, force, yes, allow_build_network) {
+            no_sandbox,
+        } => match build(&target, force, yes, allow_build_network, no_sandbox) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => fail(e),
         },
@@ -179,7 +190,16 @@ fn main() -> ExitCode {
             dry_run,
             allow_build_network,
             rmdeps,
-        } => match install(&targets, force, yes, dry_run, allow_build_network, rmdeps) {
+            no_sandbox,
+        } => match install(
+            &targets,
+            force,
+            yes,
+            dry_run,
+            allow_build_network,
+            rmdeps,
+            no_sandbox,
+        ) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => fail(e),
         },
@@ -190,7 +210,16 @@ fn main() -> ExitCode {
             allow_build_network,
             rmdeps,
             no_devel,
-        } => match upgrade(force, yes, dry_run, allow_build_network, rmdeps, !no_devel) {
+            no_sandbox,
+        } => match upgrade(
+            force,
+            yes,
+            dry_run,
+            allow_build_network,
+            rmdeps,
+            !no_devel,
+            no_sandbox,
+        ) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => fail(e),
         },
@@ -267,7 +296,7 @@ fn full_upgrade(targets: &[String], noconfirm: bool) -> Result<()> {
 
     println!("{} upgrading AUR packages…", "vouch:".bright_cyan().bold());
     // -Syu is a full upgrade, so include VCS/devel packages by default.
-    upgrade(false, noconfirm, false, false, false, true)?;
+    upgrade(false, noconfirm, false, false, false, true, false)?;
 
     if !targets.is_empty() {
         install_targets(targets, noconfirm)?;
@@ -293,7 +322,7 @@ fn install_targets(targets: &[String], noconfirm: bool) -> Result<()> {
         run_pacman_raw(&a, true)?;
     }
     if !aur.is_empty() {
-        install(&aur, false, noconfirm, false, false, false)?;
+        install(&aur, false, noconfirm, false, false, false, false)?;
     }
     Ok(())
 }
@@ -395,14 +424,8 @@ fn show_review_status(key: &str, bundle: &SourceBundle) {
 // build
 // ----------------------------------------------------------------------------
 
-fn build(target: &str, force: bool, yes: bool, allow_net: bool) -> Result<()> {
-    // Refuse early if we can't sandbox — never build unsandboxed.
-    if !vouch_sandbox::available() {
-        bail!(
-            "secure build sandbox unavailable (bwrap missing or unprivileged user \
-             namespaces disabled). Refusing to build."
-        );
-    }
+fn build(target: &str, force: bool, yes: bool, allow_net: bool, no_sandbox: bool) -> Result<()> {
+    require_sandbox(no_sandbox)?;
     let store = ReviewStore::open_default().context("opening the review store")?;
 
     let path = Path::new(target);
@@ -421,8 +444,7 @@ fn build(target: &str, force: bool, yes: bool, allow_net: bool) -> Result<()> {
     // build-network decision (flag this run, or remembered from last vouch).
     let build_network = gate_with_tofu(&store, &key, &bundle, &verdict, force, yes, allow_net)?;
 
-    announce_build(build_network);
-    let outcome = vouch_build::build_in_sandbox(&build_dir, build_network)?;
+    let outcome = build_one(&build_dir, build_network, no_sandbox)?;
 
     println!();
     println!(
@@ -563,6 +585,40 @@ fn announce_build(build_network: bool) {
     }
 }
 
+/// Unless `no_sandbox`, fail if no working build sandbox is available — vouch
+/// never silently builds unsandboxed.
+fn require_sandbox(no_sandbox: bool) -> Result<()> {
+    if !no_sandbox && !vouch_sandbox::available() {
+        bail!(
+            "secure build sandbox unavailable (bwrap missing or unprivileged user \
+             namespaces disabled). Refusing to build. Pass --no-sandbox to build \
+             without isolation (the recipe is still vetted)."
+        );
+    }
+    Ok(())
+}
+
+/// Build one package, honouring the sandbox choice. With `no_sandbox` it builds
+/// unconfined (an explicit opt-out, loudly announced); otherwise in the
+/// network-denied sandbox.
+fn build_one(
+    dir: &Path,
+    build_network: bool,
+    no_sandbox: bool,
+) -> Result<vouch_build::BuildOutcome> {
+    if no_sandbox {
+        println!(
+            "{} building {} (recipe is still vetted, but build/install code runs unconfined)",
+            "vouch:".bright_cyan().bold(),
+            "WITHOUT SANDBOX".red().bold()
+        );
+        vouch_build::build_unsandboxed(dir)
+    } else {
+        announce_build(build_network);
+        vouch_build::build_in_sandbox(dir, build_network)
+    }
+}
+
 /// Enforce the static verdict before any build happens.
 fn gate(verdict: &Verdict, force: bool, yes: bool) -> Result<()> {
     match verdict.decision {
@@ -600,6 +656,7 @@ fn gate(verdict: &Verdict, force: bool, yes: bool) -> Result<()> {
 // install (-S): resolve -> vet every AUR package -> build in order -> pacman
 // ----------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 fn install(
     targets: &[String],
     force: bool,
@@ -607,13 +664,11 @@ fn install(
     dry_run: bool,
     allow_net: bool,
     rmdeps: bool,
+    no_sandbox: bool,
 ) -> Result<()> {
     let store = ReviewStore::open_default().context("opening the review store")?;
-    if !dry_run && !vouch_sandbox::available() {
-        bail!(
-            "secure build sandbox unavailable (bwrap missing or unprivileged user \
-             namespaces disabled). Refusing to build."
-        );
+    if !dry_run {
+        require_sandbox(no_sandbox)?;
     }
 
     let roots: Vec<&str> = targets.iter().map(String::as_str).collect();
@@ -680,12 +735,13 @@ fn install(
             jobs.push((name.clone(), dest, build_network));
         }
 
-        if jobs.len() == 1 {
-            // Single package: stream the build live (the common case).
-            let (name, dir, net) = &jobs[0];
-            announce_build(*net);
-            let outcome = vouch_build::build_in_sandbox(dir, *net)?;
-            pacman_install_file(&outcome.packages, !plan.explicit_targets.contains(name))?;
+        if no_sandbox || jobs.len() == 1 {
+            // Single package, or unsandboxed builds: run them serially with
+            // live output (unsandboxed builds can't be cleanly parallelized).
+            for (name, dir, net) in &jobs {
+                let outcome = build_one(dir, *net, no_sandbox)?;
+                pacman_install_file(&outcome.packages, !plan.explicit_targets.contains(name))?;
+            }
         } else {
             build_layer_parallel(&jobs, &plan.explicit_targets, parallelism)?;
         }
@@ -934,6 +990,7 @@ fn confirm(prompt: &str) -> Result<bool> {
 // upgrade (-Syu for the AUR layer)
 // ----------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 fn upgrade(
     force: bool,
     yes: bool,
@@ -941,6 +998,7 @@ fn upgrade(
     allow_net: bool,
     rmdeps: bool,
     devel: bool,
+    no_sandbox: bool,
 ) -> Result<()> {
     let mut upgrades = vouch_resolve::find_upgrades().context("checking for AUR upgrades")?;
     if devel {
@@ -983,7 +1041,7 @@ fn upgrade(
     println!();
 
     let targets: Vec<String> = upgrades.into_iter().map(|u| u.name).collect();
-    install(&targets, force, yes, dry_run, allow_net, rmdeps)
+    install(&targets, force, yes, dry_run, allow_net, rmdeps, no_sandbox)
 }
 
 // ----------------------------------------------------------------------------
