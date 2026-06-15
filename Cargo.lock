@@ -740,6 +740,7 @@ dependencies = [
  "vouch-build",
  "vouch-core",
  "vouch-pkgbuild",
+ "vouch-resolve",
  "vouch-review",
  "vouch-rpc",
  "vouch-sandbox",
@@ -760,6 +761,15 @@ dependencies = [
  "anyhow",
  "regex",
  "ureq",
+]
+
+[[package]]
+name = "vouch-resolve"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "vouch-core",
+ "vouch-rpc",
 ]
 
 [[package]]

@@ -28,6 +28,27 @@ pub struct PackageMeta {
     /// `Some(ts)` if flagged out-of-date.
     pub out_of_date: Option<i64>,
     pub url: Option<String>,
+    /// Runtime dependencies (may carry version constraints, e.g. `pacman>6.1`).
+    #[serde(default)]
+    pub depends: Vec<String>,
+    /// Build-time dependencies.
+    #[serde(default)]
+    pub make_depends: Vec<String>,
+    /// Test-time dependencies.
+    #[serde(default)]
+    pub check_depends: Vec<String>,
+}
+
+impl PackageMeta {
+    /// Every dependency relevant to building this package (runtime + make +
+    /// check), in declaration order. Names may still carry version constraints.
+    pub fn build_deps(&self) -> impl Iterator<Item = &str> {
+        self.depends
+            .iter()
+            .chain(&self.make_depends)
+            .chain(&self.check_depends)
+            .map(String::as_str)
+    }
 }
 
 /// How severe a single finding is. Ordering matters: `Critical > High > ...`.

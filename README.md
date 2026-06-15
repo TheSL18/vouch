@@ -51,6 +51,11 @@ vouch: REVIEW REQUIRED needs your review before installing (risk 31/100)
   with `--yes`. This is the direct countermeasure to a *malicious update of an
   already-trusted package* — the heart of the "Atomic Arch" attack. A legitimate
   but custom recipe is therefore a **one-time** review, not a per-build nag.
+- `vouch install <pkg…>` (alias `i`) — resolve the full AUR dependency graph,
+  **vet every package in it** (deps are an attack surface too), build them in
+  dependency order in the sandbox, and install with `pacman` (which resolves
+  the repo dependencies). `--dry-run` resolves + vets + prints the plan without
+  building or installing anything.
 - `vouch forget <pkg>` — drop a stored approval and re-arm TOFU for it.
 
 ### Roadmap
@@ -58,10 +63,10 @@ vouch: REVIEW REQUIRED needs your review before installing (risk 31/100)
 - [x] No-network build sandbox (bubblewrap)
 - [x] Audit-gated build path
 - [x] TOFU review state + change-diff gating
-- [ ] `vouch -S`: dependency resolution + build order + `pacman -U` install
+- [x] `vouch install`: recursive dependency resolution + build order + pacman
 - [ ] Per-package opt-in for build-time network (electron/npm packages)
 - [ ] Community IoC feed checks (e.g. `aur-malware-check`)
-- [ ] ALPM integration (repo packages, installed-version checks)
+- [ ] ALPM integration (precise repo-vs-AUR, installed-version checks)
 - [ ] In-sandbox dependency provisioning (drop `--nodeps`)
 
 ## Build
@@ -83,6 +88,7 @@ vouch-security   the engine: trust + scan + scoring
 vouch-sandbox    hardened, network-denied bubblewrap build sandbox
 vouch-build      two-phase sandboxed makepkg orchestration
 vouch-review     trust-on-first-use review state + recipe change diffs
+vouch-resolve    recursive AUR dependency resolution + build ordering
 vouch-cli        the `vouch` binary
 ```
 

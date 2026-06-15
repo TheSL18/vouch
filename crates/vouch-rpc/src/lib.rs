@@ -1,8 +1,8 @@
 //! Minimal client for the AUR RPC (interface v5).
 //!
-//! We only need the `info` endpoint for now: given a package name it returns
-//! the maintainer, vote/popularity numbers and timestamps that the trust
-//! engine reasons about. Docs: <https://aur.archlinux.org/rpc>
+//! We use the `info` endpoint to fetch the maintainer/vote/timestamp metadata
+//! the trust engine reasons about, plus the dependency arrays the resolver
+//! needs. Docs: <https://aur.archlinux.org/rpc>
 
 use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
@@ -11,8 +11,9 @@ use vouch_core::PackageMeta;
 const RPC_BASE: &str = "https://aur.archlinux.org/rpc/v5";
 const USER_AGENT: &str = concat!("vouch/", env!("CARGO_PKG_VERSION"));
 
-/// Raw shape of one entry in the RPC `results` array. The AUR uses
-/// PascalCase keys; we rename into our normalized [`PackageMeta`].
+/// Raw shape of one entry in the RPC `results` array. The AUR uses PascalCase
+/// keys; absent arrays come back as JSON `null`, so the dependency fields are
+/// `Option` and defaulted on the way into [`PackageMeta`].
 #[derive(Debug, Deserialize)]
 struct RpcResult {
     #[serde(rename = "Name")]
@@ -37,6 +38,12 @@ struct RpcResult {
     out_of_date: Option<i64>,
     #[serde(rename = "URL")]
     url: Option<String>,
+    #[serde(rename = "Depends", default)]
+    depends: Option<Vec<String>>,
+    #[serde(rename = "MakeDepends", default)]
+    make_depends: Option<Vec<String>>,
+    #[serde(rename = "CheckDepends", default)]
+    check_depends: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -63,36 +70,60 @@ impl From<RpcResult> for PackageMeta {
             last_modified: r.last_modified,
             out_of_date: r.out_of_date,
             url: r.url,
+            depends: r.depends.unwrap_or_default(),
+            make_depends: r.make_depends.unwrap_or_default(),
+            check_depends: r.check_depends.unwrap_or_default(),
         }
     }
 }
 
-/// Look up a single package by exact name. Returns `Ok(None)` if the AUR has
-/// no such package (so the caller can distinguish "not found" from a network
-/// error).
-pub fn info(pkg: &str) -> Result<Option<PackageMeta>> {
-    let url = format!("{RPC_BASE}/info?arg[]={}", urlencode(pkg));
-    let body = ureq::get(&url)
+/// GET `url` and parse the standard RPC envelope, surfacing RPC-level errors.
+fn get(url: &str) -> Result<Vec<PackageMeta>> {
+    let body = ureq::get(url)
         .set("User-Agent", USER_AGENT)
         .call()
-        .with_context(|| format!("querying AUR RPC for {pkg}"))?
+        .context("querying AUR RPC")?
         .into_string()
         .context("reading AUR RPC response body")?;
 
     let resp: RpcResponse = serde_json::from_str(&body).context("parsing AUR RPC JSON response")?;
-
     if resp.kind == "error" {
         return Err(anyhow!(
             "AUR RPC error: {}",
             resp.error.unwrap_or_else(|| "unknown".into())
         ));
     }
+    Ok(resp.results.into_iter().map(PackageMeta::from).collect())
+}
 
-    Ok(resp.results.into_iter().next().map(PackageMeta::from))
+/// Look up a single package by exact name. `Ok(None)` if the AUR has no such
+/// package (so the caller can tell "not found" from a network error).
+pub fn info(pkg: &str) -> Result<Option<PackageMeta>> {
+    let url = format!("{RPC_BASE}/info?arg[]={}", urlencode(pkg));
+    Ok(get(&url)
+        .with_context(|| format!("looking up {pkg}"))?
+        .into_iter()
+        .next())
+}
+
+/// Look up many packages in one request. The result contains only the names
+/// that exist in the AUR, in unspecified order.
+pub fn info_many(pkgs: &[&str]) -> Result<Vec<PackageMeta>> {
+    if pkgs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut url = format!("{RPC_BASE}/info");
+    let mut sep = '?';
+    for p in pkgs {
+        url.push(sep);
+        url.push_str("arg[]=");
+        url.push_str(&urlencode(p));
+        sep = '&';
+    }
+    get(&url)
 }
 
 /// Percent-encode the characters that actually matter for a query value.
-/// Package names are restricted to a safe charset, but we stay defensive.
 fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {

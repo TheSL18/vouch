@@ -8,6 +8,7 @@
 //!   sandbox. Records your approval. Does not install.
 //! * `forget <pkg>` — drop the stored review record for a package.
 
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -51,6 +52,23 @@ enum Command {
         #[arg(long)]
         yes: bool,
     },
+    /// Resolve dependencies, vet every AUR package, build them in order, and
+    /// install. Aliased as `-S` in spirit.
+    #[command(visible_alias = "i")]
+    Install {
+        /// One or more AUR package names to install.
+        #[arg(required = true)]
+        targets: Vec<String>,
+        /// Build even if a verdict is REFUSED (strongly discouraged).
+        #[arg(long)]
+        force: bool,
+        /// Proceed past REVIEW verdicts / changed recipes without stopping.
+        #[arg(long)]
+        yes: bool,
+        /// Resolve and vet everything, print the plan, but build/install nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Forget the stored review record for a package (re-arms TOFU for it).
     Forget {
         /// Package name (or local directory name) to forget.
@@ -66,6 +84,15 @@ fn main() -> ExitCode {
             Err(e) => fail(e),
         },
         Command::Build { target, force, yes } => match build(&target, force, yes) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => fail(e),
+        },
+        Command::Install {
+            targets,
+            force,
+            yes,
+            dry_run,
+        } => match install(&targets, force, yes, dry_run) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => fail(e),
         },
@@ -323,6 +350,198 @@ fn gate(verdict: &Verdict, force: bool, yes: bool) -> Result<()> {
 }
 
 // ----------------------------------------------------------------------------
+// install (-S): resolve -> vet every AUR package -> build in order -> pacman
+// ----------------------------------------------------------------------------
+
+fn install(targets: &[String], force: bool, yes: bool, dry_run: bool) -> Result<()> {
+    let store = ReviewStore::open_default().context("opening the review store")?;
+    if !dry_run && !vouch_sandbox::available() {
+        bail!(
+            "secure build sandbox unavailable (bwrap missing or unprivileged user \
+             namespaces disabled). Refusing to build."
+        );
+    }
+
+    let roots: Vec<&str> = targets.iter().map(String::as_str).collect();
+    let plan = vouch_resolve::resolve_many(&roots).context("resolving dependencies")?;
+    print_plan(&plan);
+
+    // Vet (and, unless dry-run, build) every AUR package in dependency order.
+    // A single REFUSED package aborts the whole operation — dependencies are
+    // an attack surface too.
+    let mut built: Vec<(String, Vec<PathBuf>)> = Vec::new();
+    for name in &plan.aur_build_order {
+        println!("\n{} {}", "::".blue().bold(), name.bold());
+        if dry_run {
+            dry_run_vet(name)?;
+            continue;
+        }
+        let (dest, key, bundle, verdict) = prepare_aur_build(name, force, yes)?;
+        gate_with_tofu(&store, &key, &bundle, &verdict, force, yes)?;
+        let outcome = vouch_build::build_in_sandbox(&dest)?;
+        built.push((name.clone(), outcome.packages));
+    }
+
+    if dry_run {
+        println!(
+            "\n{} dry run — nothing built or installed.",
+            "vouch:".bold()
+        );
+        print_pacman_plan(&plan);
+        return Ok(());
+    }
+
+    pacman_install(&plan, &built, yes)
+}
+
+/// Print the resolved plan up front so the user sees the whole blast radius.
+fn print_plan(plan: &vouch_resolve::ResolvedPlan) {
+    println!("{} resolution", "vouch:".bold());
+    println!(
+        "  AUR packages to build ({}, in order): {}",
+        plan.aur_build_order.len(),
+        plan.aur_build_order.join(" → ").bold()
+    );
+    if !plan.repo_deps.is_empty() {
+        println!(
+            "  repo dependencies (pacman will resolve): {}",
+            plan.repo_deps.join(" ").dimmed()
+        );
+    }
+}
+
+/// Read-only vet of one AUR package for `--dry-run`: verdict + TOFU status,
+/// and what the gate would decide — without cloning, building or recording.
+fn dry_run_vet(name: &str) -> Result<()> {
+    let meta = vouch_rpc::info(name)
+        .context("looking up package on the AUR")?
+        .with_context(|| format!("'{name}' is not in the AUR"))?;
+    let bundle =
+        vouch_pkgbuild::fetch(&meta.package_base).context("fetching the package build recipe")?;
+    let verdict = vouch_security::evaluate(&meta, &bundle, now_unix());
+    print_meta(&meta);
+    print_findings(&verdict);
+    show_review_status(&meta.package_base, &bundle);
+    let would = match verdict.decision {
+        Decision::Vouched => "would build".green().to_string(),
+        Decision::Review => "would require --yes".yellow().to_string(),
+        Decision::Refused => "would be REFUSED (needs --force)".red().to_string(),
+    };
+    println!("  {} {would}", "→".dimmed());
+    Ok(())
+}
+
+/// Print the exact pacman commands an install would run.
+fn print_pacman_plan(plan: &vouch_resolve::ResolvedPlan) {
+    let sudo = if is_root() { "" } else { "sudo " };
+    println!(
+        "  {} {sudo}pacman -U --asdeps <built AUR dependencies>",
+        "would run:".dimmed()
+    );
+    println!(
+        "  {} {sudo}pacman -U <built {}>",
+        "would run:".dimmed(),
+        plan.explicit_targets.join(", ")
+    );
+    println!(
+        "  {}",
+        "(pacman resolves and installs the repo dependencies listed above)".dimmed()
+    );
+}
+
+/// Install the built packages with pacman: dependencies as `--asdeps`, the
+/// explicitly-requested targets as explicit. pacman pulls repo deps itself.
+fn pacman_install(
+    plan: &vouch_resolve::ResolvedPlan,
+    built: &[(String, Vec<PathBuf>)],
+    yes: bool,
+) -> Result<()> {
+    let mut dep_pkgs: Vec<&PathBuf> = Vec::new();
+    let mut explicit_pkgs: Vec<&PathBuf> = Vec::new();
+    for (name, pkgs) in built {
+        if plan.explicit_targets.contains(name) {
+            explicit_pkgs.extend(pkgs.iter());
+        } else {
+            dep_pkgs.extend(pkgs.iter());
+        }
+    }
+
+    println!("\n{} ready to install:", "vouch:".bold());
+    if !dep_pkgs.is_empty() {
+        println!(
+            "  dependencies (--asdeps): {}",
+            join_paths(&dep_pkgs).dimmed()
+        );
+    }
+    println!("  targets: {}", join_paths(&explicit_pkgs).bold());
+
+    if !yes && !confirm("Proceed with pacman installation?")? {
+        bail!("installation cancelled by user");
+    }
+
+    if !dep_pkgs.is_empty() {
+        run_pacman(&["-U", "--asdeps", "--needed"], &dep_pkgs)?;
+    }
+    if !explicit_pkgs.is_empty() {
+        run_pacman(&["-U", "--needed"], &explicit_pkgs)?;
+    }
+    println!(
+        "{} {}",
+        "vouch:".bold(),
+        "installation complete".green().bold()
+    );
+    Ok(())
+}
+
+fn run_pacman(args: &[&str], pkgs: &[&PathBuf]) -> Result<()> {
+    let (program, lead): (&str, &[&str]) = if is_root() {
+        ("pacman", &[])
+    } else {
+        ("sudo", &["pacman"])
+    };
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(lead)
+        .args(args)
+        .args(pkgs.iter().map(|p| p.as_os_str()));
+    let status = cmd.status().context("running pacman")?;
+    if !status.success() {
+        bail!("pacman exited with failure");
+    }
+    Ok(())
+}
+
+/// Best-effort euid check without pulling in libc: read `/proc/self/status`.
+/// If we can't tell, assume non-root and prefix `sudo` (the safe default).
+fn is_root() -> bool {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find_map(|l| l.strip_prefix("Uid:"))
+                .and_then(|l| l.split_whitespace().nth(1).map(str::to_string))
+        })
+        .map(|euid| euid == "0")
+        .unwrap_or(false)
+}
+
+fn join_paths(pkgs: &[&PathBuf]) -> String {
+    pkgs.iter()
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn confirm(prompt: &str) -> Result<bool> {
+    print!("{prompt} [y/N] ");
+    io::stdout().flush().ok();
+    let mut line = String::new();
+    io::stdin()
+        .read_line(&mut line)
+        .context("reading confirmation")?;
+    Ok(matches!(line.trim(), "y" | "Y" | "yes"))
+}
+
+// ----------------------------------------------------------------------------
 // forget
 // ----------------------------------------------------------------------------
 
@@ -389,17 +608,27 @@ fn print_findings(verdict: &Verdict) {
     if verdict.findings.is_empty() {
         println!("  {} no findings", "✓".green());
     } else {
+        // Group repeated hits of the same rule into one line (with all the
+        // locations) so the report mirrors how the score counts them.
+        let mut groups: Vec<(&vouch_core::Finding, Vec<String>)> = Vec::new();
         for f in &verdict.findings {
+            if let Some(g) = groups.iter_mut().find(|(rep, _)| rep.id == f.id) {
+                g.1.extend(f.location.clone());
+            } else {
+                groups.push((f, f.location.clone().into_iter().collect()));
+            }
+        }
+        for (f, locs) in groups {
             let mark = match f.severity {
                 Severity::Critical | Severity::High => "✗",
                 Severity::Medium => "!",
                 _ => "·",
             };
-            let loc = f
-                .location
-                .as_deref()
-                .map(|l| format!(" [{l}]"))
-                .unwrap_or_default();
+            let loc = match locs.len() {
+                0 => String::new(),
+                1 => format!(" [{}]", locs[0]),
+                n => format!(" [{n} places: {}]", locs.join(", ")),
+            };
             println!(
                 "  {} {:<8} {}{}",
                 mark.color(severity_color(f.severity)),
