@@ -1,0 +1,30 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/vouch-core",
+    "crates/vouch-rpc",
+    "crates/vouch-pkgbuild",
+    "crates/vouch-security",
+    "crates/vouch-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+authors = ["Kevin Muñoz <kmunoz@condorbs.net>"]
+repository = "https://github.com/mrhacker/vouch"
+rust-version = "1.85"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+ureq = "2"
+clap = { version = "4", features = ["derive"] }
+owo-colors = "4"
+regex = "1"
+
+[profile.release]
+lto = "thin"
+strip = true

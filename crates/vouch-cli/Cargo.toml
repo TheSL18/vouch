@@ -1,0 +1,20 @@
+[package]
+name = "vouch-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "vouch"
+path = "src/main.rs"
+
+[dependencies]
+vouch-core = { path = "../vouch-core" }
+vouch-rpc = { path = "../vouch-rpc" }
+vouch-pkgbuild = { path = "../vouch-pkgbuild" }
+vouch-security = { path = "../vouch-security" }
+clap.workspace = true
+anyhow.workspace = true
+owo-colors.workspace = true
+serde_json.workspace = true

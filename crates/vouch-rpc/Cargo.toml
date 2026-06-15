@@ -1,0 +1,13 @@
+[package]
+name = "vouch-rpc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+vouch-core = { path = "../vouch-core" }
+serde.workspace = true
+serde_json.workspace = true
+ureq.workspace = true
+anyhow.workspace = true

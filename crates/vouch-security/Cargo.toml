@@ -1,0 +1,11 @@
+[package]
+name = "vouch-security"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+vouch-core = { path = "../vouch-core" }
+vouch-pkgbuild = { path = "../vouch-pkgbuild" }
+regex.workspace = true
