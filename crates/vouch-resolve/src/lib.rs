@@ -247,13 +247,11 @@ pub fn find_upgrades() -> Result<Vec<Upgrade>> {
         return Ok(Vec::new());
     }
 
-    // Query the AUR for current versions, in chunks to keep URLs sane.
+    // Query the AUR for current versions (info_many batches internally).
     let names: Vec<&str> = foreign.iter().map(|(n, _)| n.as_str()).collect();
     let mut available: BTreeMap<String, String> = BTreeMap::new();
-    for chunk in names.chunks(50) {
-        for meta in vouch_rpc::info_many(chunk).context("querying AUR versions")? {
-            available.insert(meta.name.clone(), meta.version.clone());
-        }
+    for meta in vouch_rpc::info_many(&names).context("querying AUR versions")? {
+        available.insert(meta.name.clone(), meta.version.clone());
     }
 
     let mut upgrades: Vec<Upgrade> = foreign
@@ -293,10 +291,8 @@ pub fn find_devel_upgrades() -> Result<Vec<Upgrade>> {
     // Keep only those still in the AUR (map name -> package base).
     let names: Vec<&str> = vcs.iter().map(|(n, _)| n.as_str()).collect();
     let mut base_of: BTreeMap<String, String> = BTreeMap::new();
-    for chunk in names.chunks(50) {
-        for m in vouch_rpc::info_many(chunk).context("querying AUR")? {
-            base_of.insert(m.name.clone(), m.package_base);
-        }
+    for m in vouch_rpc::info_many(&names).context("querying AUR")? {
+        base_of.insert(m.name.clone(), m.package_base);
     }
 
     let mut upgrades = Vec::new();

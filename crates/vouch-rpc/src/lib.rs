@@ -153,27 +153,31 @@ pub fn search(query: &str) -> Result<Vec<PackageMeta>> {
     get(&url).with_context(|| format!("searching the AUR for {query:?}"))
 }
 
-/// Look up many packages in one request. The result contains only the names
-/// that exist in the AUR, in unspecified order.
-///
-/// Uses POST: with many packages a GET URL grows long enough that the AUR drops
-/// the connection ("unexpected EOF"). The RPC `info` endpoint accepts the same
-/// `arg[]` parameters as a form body.
-#[allow(clippy::result_large_err)]
+/// Maximum packages per `info` request. The AUR drops connections for large
+/// requests ("unexpected EOF"), so we keep each query small and batch.
+const INFO_CHUNK: usize = 15;
+
+/// Look up many packages, batching into small requests. The result contains
+/// only the names that exist in the AUR, in unspecified order.
 pub fn info_many(pkgs: &[&str]) -> Result<Vec<PackageMeta>> {
-    if pkgs.is_empty() {
-        return Ok(Vec::new());
+    let mut out = Vec::new();
+    for (i, chunk) in pkgs.chunks(INFO_CHUNK).enumerate() {
+        if i > 0 {
+            // Be gentle: a brief pause between requests avoids the AUR resetting
+            // rapid successive connections.
+            std::thread::sleep(std::time::Duration::from_millis(120));
+        }
+        let mut url = format!("{RPC_BASE}/info");
+        let mut sep = '?';
+        for p in chunk {
+            url.push(sep);
+            url.push_str("arg[]=");
+            url.push_str(&urlencode(p));
+            sep = '&';
+        }
+        out.extend(get(&url).context("querying AUR RPC")?);
     }
-    let url = format!("{RPC_BASE}/info");
-    let form: Vec<(&str, &str)> = pkgs.iter().map(|p| ("arg[]", *p)).collect();
-    let body = execute(|| {
-        agent()
-            .post(&url)
-            .set("User-Agent", USER_AGENT)
-            .send_form(&form)
-    })
-    .context("querying AUR RPC")?;
-    parse_envelope(&body)
+    Ok(out)
 }
 
 /// Percent-encode the characters that actually matter for a query value.
