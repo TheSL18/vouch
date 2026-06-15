@@ -79,8 +79,7 @@ pub fn info(pkg: &str) -> Result<Option<PackageMeta>> {
         .into_string()
         .context("reading AUR RPC response body")?;
 
-    let resp: RpcResponse =
-        serde_json::from_str(&body).context("parsing AUR RPC JSON response")?;
+    let resp: RpcResponse = serde_json::from_str(&body).context("parsing AUR RPC JSON response")?;
 
     if resp.kind == "error" {
         return Err(anyhow!(

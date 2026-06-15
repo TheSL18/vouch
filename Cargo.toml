@@ -4,6 +4,8 @@ members = [
     "crates/vouch-core",
     "crates/vouch-rpc",
     "crates/vouch-pkgbuild",
+    "crates/vouch-sandbox",
+    "crates/vouch-build",
     "crates/vouch-security",
     "crates/vouch-cli",
 ]

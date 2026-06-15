@@ -36,17 +36,24 @@ vouch: REVIEW REQUIRED needs your review before installing (risk 31/100)
 
 ## Status
 
-Milestone 1 (current): `vouch audit <pkg>` — fetches a package's real AUR metadata
-and build recipe and prints a verdict. **Never builds or installs.** Read-only.
+- `vouch audit <pkg>` — fetch a package's real AUR metadata + recipe and print
+  a verdict. **Read-only**; never builds.
+- `vouch build <pkg|dir>` — audit, gate on the verdict, then build inside a
+  **network-denied sandbox** (bubblewrap). Two phases: sources are fetched and
+  checksum-verified with the network on; `prepare()`/`build()`/`package()` run
+  with the network **off**, so a recipe can't pull a payload. Produces a
+  `.pkg.tar.*` for you to install with `pacman -U`. Refuses to build if a
+  sandbox can't be established — never falls back to an unsandboxed build.
 
 ### Roadmap
 
-- [ ] `vouch -S` install path, gated by the audit verdict
-- [ ] PKGBUILD diff vs last reviewed version (TOFU)
-- [ ] No-network build sandbox (bubblewrap / systemd-nspawn)
+- [x] No-network build sandbox (bubblewrap)
+- [x] Audit-gated build path
+- [ ] `vouch -S`: dependency resolution + build order + `pacman -U` install
+- [ ] PKGBUILD diff vs last reviewed version (TOFU review state)
 - [ ] Community IoC feed checks (e.g. `aur-malware-check`)
-- [ ] ALPM integration (dependency resolution, build order, repo packages)
-- [ ] Local file audit (`vouch audit --file ./PKGBUILD`) for CI
+- [ ] ALPM integration (repo packages, installed-version checks)
+- [ ] In-sandbox dependency provisioning (drop `--nodeps`)
 
 ## Build
 
@@ -62,8 +69,10 @@ Exit codes: `0` vouched · `1` review required · `2` refused · `3` error.
 ```
 vouch-core       shared types (PackageMeta, Finding, Severity, Verdict)
 vouch-rpc        AUR RPC v5 client
-vouch-pkgbuild   read-only fetch of PKGBUILD + .install files
+vouch-pkgbuild   read-only fetch / local load / clone of PKGBUILD + .install
 vouch-security   the engine: trust + scan + scoring
+vouch-sandbox    hardened, network-denied bubblewrap build sandbox
+vouch-build      two-phase sandboxed makepkg orchestration
 vouch-cli        the `vouch` binary
 ```
 

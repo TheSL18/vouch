@@ -93,7 +93,9 @@ fn rules() -> Vec<Rule> {
             detail: "Touching systemd units, cron, profile.d or shell rc files lets code \
                      persist and re-run after install. Packages install their own units \
                      via the package(), not by editing system-wide rc files directly.",
-            re: r(r"(/etc/systemd/system|/etc/cron|/etc/profile\.d|\.bashrc|\.zshrc|\.profile|\.config/autostart|\bcrontab\s+-)"),
+            re: r(
+                r"(/etc/systemd/system|/etc/cron|/etc/profile\.d|\.bashrc|\.zshrc|\.profile|\.config/autostart|\bcrontab\s+-)",
+            ),
         },
         Rule {
             id: "scan.suspicious-host",
@@ -101,7 +103,9 @@ fn rules() -> Vec<Rule> {
             title: "Downloads from an ephemeral file-sharing host",
             detail: "Sources hosted on paste/temp services can be swapped silently and \
                      are not appropriate origins for a package.",
-            re: r(r"(pastebin\.com|anonfiles|transfer\.sh|0x0\.st|file\.io|bashupload|ghostbin|termbin)"),
+            re: r(
+                r"(pastebin\.com|anonfiles|transfer\.sh|0x0\.st|file\.io|bashupload|ghostbin|termbin)",
+            ),
         },
         Rule {
             id: "scan.raw-ip-download",
@@ -126,8 +130,14 @@ fn rules() -> Vec<Rule> {
 /// belong in the `source=()` array, fetched and checksummed by makepkg.
 const NET_FREE_FUNCS: &[&str] = &["prepare", "build", "check", "package"];
 /// `.install` hook functions that run with **root** privileges via pacman.
-const INSTALL_HOOK_FUNCS: &[&str] =
-    &["pre_install", "post_install", "pre_upgrade", "post_upgrade", "pre_remove", "post_remove"];
+const INSTALL_HOOK_FUNCS: &[&str] = &[
+    "pre_install",
+    "post_install",
+    "pre_upgrade",
+    "post_upgrade",
+    "pre_remove",
+    "post_remove",
+];
 
 pub fn evaluate(bundle: &SourceBundle) -> Vec<Finding> {
     let mut findings = Vec::new();
@@ -163,21 +173,21 @@ pub fn evaluate(bundle: &SourceBundle) -> Vec<Finding> {
 
         // Pass 2: structural — network calls inside build/package functions.
         for func in extract_functions(content) {
-            if NET_FREE_FUNCS.contains(&func.name.as_str()) {
-                if let Some(rel) = net_re.find(&func.body) {
-                    let line = func.start_line + line_offset(&func.body, rel.start());
-                    findings.push(Finding {
-                        id: "scan.net-in-build".into(),
-                        severity: Severity::High,
-                        title: format!("Network access inside {}()", func.name),
-                        detail: "Sources must be declared in source=() so makepkg fetches \
+            if NET_FREE_FUNCS.contains(&func.name.as_str())
+                && let Some(rel) = net_re.find(&func.body)
+            {
+                let line = func.start_line + line_offset(&func.body, rel.start());
+                findings.push(Finding {
+                    id: "scan.net-in-build".into(),
+                    severity: Severity::High,
+                    title: format!("Network access inside {}()", func.name),
+                    detail: "Sources must be declared in source=() so makepkg fetches \
                                  and checksums them. A network call inside this function \
                                  pulls unverified content at build time — the dependency \
                                  confusion vector behind 'Atomic Arch'."
-                            .into(),
-                        location: Some(format!("{name}:{line}")),
-                    });
-                }
+                        .into(),
+                    location: Some(format!("{name}:{line}")),
+                });
             }
 
             if INSTALL_HOOK_FUNCS.contains(&func.name.as_str()) {
@@ -235,7 +245,11 @@ fn extract_functions(content: &str) -> Vec<ShellFunc> {
                     if depth == 0 {
                         let body = content[body_start..i].to_string();
                         let start_line = line_offset(content, m.start()) + 1;
-                        funcs.push(ShellFunc { name, start_line, body });
+                        funcs.push(ShellFunc {
+                            name,
+                            start_line,
+                            body,
+                        });
                         break;
                     }
                 }
@@ -249,7 +263,10 @@ fn extract_functions(content: &str) -> Vec<ShellFunc> {
 
 /// Number of newlines before `byte_offset` (i.e. 0-based line index).
 fn line_offset(s: &str, byte_offset: usize) -> usize {
-    s[..byte_offset.min(s.len())].bytes().filter(|&b| b == b'\n').count()
+    s[..byte_offset.min(s.len())]
+        .bytes()
+        .filter(|&b| b == b'\n')
+        .count()
 }
 
 #[cfg(test)]
@@ -284,7 +301,10 @@ post_install() {
         SourceBundle {
             package_base: "totally-legit".into(),
             pkgbuild: pkgbuild.into(),
-            install_files: vec![SourceFile { name: "totally-legit.install".into(), content: install.into() }],
+            install_files: vec![SourceFile {
+                name: "totally-legit.install".into(),
+                content: install.into(),
+            }],
         }
     }
 
@@ -292,12 +312,24 @@ post_install() {
     fn detects_atomic_arch_signatures_and_refuses() {
         let findings = evaluate(&malicious_bundle());
         let got = ids(&findings);
-        assert!(got.contains(&"scan.js-pkg-install"), "should flag npm install");
+        assert!(
+            got.contains(&"scan.js-pkg-install"),
+            "should flag npm install"
+        );
         assert!(got.contains(&"scan.pipe-to-shell"), "should flag curl|bash");
         assert!(got.contains(&"scan.ebpf"), "should flag eBPF rootkit");
-        assert!(got.contains(&"scan.net-in-build"), "should flag net in build()");
-        assert!(got.contains(&"scan.persistence"), "should flag .bashrc write");
-        assert!(got.contains(&"scan.install-hook"), "should flag root install hook");
+        assert!(
+            got.contains(&"scan.net-in-build"),
+            "should flag net in build()"
+        );
+        assert!(
+            got.contains(&"scan.persistence"),
+            "should flag .bashrc write"
+        );
+        assert!(
+            got.contains(&"scan.install-hook"),
+            "should flag root install hook"
+        );
 
         assert!(findings.iter().any(|f| f.severity == Severity::Critical));
         let verdict = score::build_verdict("totally-legit", findings);

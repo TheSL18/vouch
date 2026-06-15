@@ -52,7 +52,7 @@ pub fn evaluate_at(meta: &PackageMeta, now: i64) -> Vec<Finding> {
     let mut findings = evaluate(meta);
 
     let age_since_update = now - meta.last_modified;
-    if age_since_update >= 0 && age_since_update <= RECENT_UPDATE_SECS {
+    if (0..=RECENT_UPDATE_SECS).contains(&age_since_update) {
         findings.push(Finding {
             id: "trust.recent-update".into(),
             severity: Severity::Low,

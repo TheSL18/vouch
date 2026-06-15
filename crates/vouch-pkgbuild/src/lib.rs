@@ -6,7 +6,11 @@
 //! "Atomic Arch" payloads lived precisely in `PKGBUILD` functions and
 //! `.install` hooks, so these are the files that matter most.
 
-use anyhow::{Context, Result};
+use std::fs;
+use std::path::Path;
+use std::process::Command;
+
+use anyhow::{Context, Result, bail};
 use regex::Regex;
 
 const CGIT_PLAIN: &str = "https://aur.archlinux.org/cgit/aur.git/plain";
@@ -32,8 +36,11 @@ pub struct SourceBundle {
 impl SourceBundle {
     /// Iterate over every fetched file as `(name, content)`, PKGBUILD first.
     pub fn files(&self) -> impl Iterator<Item = (&str, &str)> {
-        std::iter::once(("PKGBUILD", self.pkgbuild.as_str()))
-            .chain(self.install_files.iter().map(|f| (f.name.as_str(), f.content.as_str())))
+        std::iter::once(("PKGBUILD", self.pkgbuild.as_str())).chain(
+            self.install_files
+                .iter()
+                .map(|f| (f.name.as_str(), f.content.as_str())),
+        )
     }
 }
 
@@ -66,6 +73,60 @@ pub fn fetch(package_base: &str) -> Result<SourceBundle> {
         pkgbuild,
         install_files,
     })
+}
+
+/// Load a package's recipe from a local directory (one containing a
+/// `PKGBUILD`), reading the same files [`fetch`] would. Used both to audit a
+/// local checkout and to re-audit a freshly cloned AUR repo — *what we are
+/// about to build* — rather than trusting the earlier metadata fetch.
+pub fn load_local(dir: &Path) -> Result<SourceBundle> {
+    let pkgbuild_path = dir.join("PKGBUILD");
+    let pkgbuild = fs::read_to_string(&pkgbuild_path)
+        .with_context(|| format!("reading {}", pkgbuild_path.display()))?;
+
+    let package_base = dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("local")
+        .to_string();
+
+    let mut install_files = Vec::new();
+    for name in referenced_install_files(&pkgbuild, &package_base) {
+        let path = dir.join(&name);
+        if let Ok(content) = fs::read_to_string(&path) {
+            install_files.push(SourceFile { name, content });
+        }
+    }
+
+    Ok(SourceBundle {
+        package_base,
+        pkgbuild,
+        install_files,
+    })
+}
+
+/// Clone an AUR package's git repository into `dest` (shallow). This fetches
+/// the *complete* recipe — PKGBUILD plus any local patches/sources — which is
+/// what a real build needs. Network only; nothing is executed.
+pub fn clone(package_base: &str, dest: &Path) -> Result<()> {
+    // AUR package names are validated by the AUR; still, refuse anything that
+    // could escape the URL path.
+    if package_base.is_empty()
+        || package_base
+            .contains(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '+')))
+    {
+        bail!("invalid package base name: {package_base:?}");
+    }
+    let url = format!("https://aur.archlinux.org/{package_base}.git");
+    let status = Command::new("git")
+        .args(["clone", "--depth", "1", "--quiet", &url])
+        .arg(dest)
+        .status()
+        .context("running git clone")?;
+    if !status.success() {
+        bail!("git clone of {url} failed");
+    }
+    Ok(())
 }
 
 /// Pull `install=` declarations out of a PKGBUILD and resolve simple

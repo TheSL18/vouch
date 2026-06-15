@@ -14,6 +14,8 @@ vouch-core = { path = "../vouch-core" }
 vouch-rpc = { path = "../vouch-rpc" }
 vouch-pkgbuild = { path = "../vouch-pkgbuild" }
 vouch-security = { path = "../vouch-security" }
+vouch-build = { path = "../vouch-build" }
+vouch-sandbox = { path = "../vouch-sandbox" }
 clap.workspace = true
 anyhow.workspace = true
 owo-colors.workspace = true

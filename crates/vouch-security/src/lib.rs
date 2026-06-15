@@ -28,3 +28,10 @@ pub fn evaluate(meta: &PackageMeta, bundle: &SourceBundle, now: i64) -> Verdict 
     findings.extend(scan::evaluate(bundle));
     score::build_verdict(&meta.name, findings)
 }
+
+/// Vet a recipe using the static scanner only, with no AUR trust metadata.
+/// Used for local package directories (and to re-check a cloned repo against
+/// the exact files we are about to build).
+pub fn scan_only(name: &str, bundle: &SourceBundle) -> Verdict {
+    score::build_verdict(name, scan::evaluate(bundle))
+}
