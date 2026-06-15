@@ -2,9 +2,11 @@
 //!
 //! Subcommands:
 //! * `audit <pkg>` — fetch a package's AUR metadata + recipe and print a risk
-//!   verdict. Read-only; never builds.
-//! * `build <pkg|dir>` — audit, gate on the verdict, then build the package
-//!   inside a network-denied sandbox. Does not install.
+//!   verdict, plus how it relates to what you last vouched for. Read-only.
+//! * `build <pkg|dir>` — audit, gate on the verdict *and* on whether the recipe
+//!   changed since you last vouched (TOFU), then build inside a network-denied
+//!   sandbox. Records your approval. Does not install.
+//! * `forget <pkg>` — drop the stored review record for a package.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -14,6 +16,8 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use owo_colors::{AnsiColors, OwoColorize};
 use vouch_core::{Decision, PackageMeta, Severity, Verdict};
+use vouch_pkgbuild::SourceBundle;
+use vouch_review::{ReviewStatus, ReviewStore, ReviewedFile, render_diff};
 
 #[derive(Parser)]
 #[command(
@@ -43,9 +47,14 @@ enum Command {
         /// Build even if the verdict is REFUSED (strongly discouraged).
         #[arg(long)]
         force: bool,
-        /// Proceed past a REVIEW verdict without an interactive stop.
+        /// Proceed past a REVIEW verdict, or accept a changed recipe.
         #[arg(long)]
         yes: bool,
+    },
+    /// Forget the stored review record for a package (re-arms TOFU for it).
+    Forget {
+        /// Package name (or local directory name) to forget.
+        package: String,
     },
 }
 
@@ -57,6 +66,10 @@ fn main() -> ExitCode {
             Err(e) => fail(e),
         },
         Command::Build { target, force, yes } => match build(&target, force, yes) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => fail(e),
+        },
+        Command::Forget { package } => match forget(&package) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => fail(e),
         },
@@ -76,7 +89,7 @@ fn now_unix() -> i64 {
 }
 
 // ----------------------------------------------------------------------------
-// audit
+// audit (read-only)
 // ----------------------------------------------------------------------------
 
 fn audit(package: &str, json: bool) -> Result<Verdict> {
@@ -94,8 +107,40 @@ fn audit(package: &str, json: bool) -> Result<Verdict> {
     } else {
         print_meta(&meta);
         print_findings(&verdict);
+        show_review_status(&meta.package_base, &bundle);
     }
     Ok(verdict)
+}
+
+/// Print how the current recipe relates to what the user last vouched for.
+/// Read-only: never records anything.
+fn show_review_status(key: &str, bundle: &SourceBundle) {
+    let Ok(store) = ReviewStore::open_default() else {
+        return;
+    };
+    let files = reviewed_files(bundle);
+    match store.status(key, &files) {
+        Ok(ReviewStatus::New) => {
+            println!("{} not vouched before (new to you)", "review:".bold());
+        }
+        Ok(ReviewStatus::Unchanged { record }) => {
+            println!(
+                "{} unchanged since you vouched it {}",
+                "review:".bold(),
+                human_since(record.approved_at)
+            );
+        }
+        Ok(ReviewStatus::Changed { previous, .. }) => {
+            println!(
+                "{} {} changed since you vouched it {}",
+                "review:".bold(),
+                "⚠".yellow().bold(),
+                human_since(previous.approved_at)
+            );
+            print_review_diff(&render_diff(&previous, &files));
+        }
+        Err(_) => {}
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -110,14 +155,22 @@ fn build(target: &str, force: bool, yes: bool) -> Result<()> {
              namespaces disabled). Refusing to build."
         );
     }
+    let store = ReviewStore::open_default().context("opening the review store")?;
 
     let path = Path::new(target);
-    let build_dir = if path.is_dir() && path.join("PKGBUILD").is_file() {
-        audit_local_and_gate(path, force, yes)?;
-        path.to_path_buf()
+    let (build_dir, key, bundle, verdict) = if path.is_dir() && path.join("PKGBUILD").is_file() {
+        let bundle = vouch_pkgbuild::load_local(path).context("loading local PKGBUILD")?;
+        let key = bundle.package_base.clone();
+        let verdict = vouch_security::scan_only(&key, &bundle);
+        print_findings(&verdict);
+        (path.to_path_buf(), key, bundle, verdict)
     } else {
-        audit_aur_and_clone(target, force, yes)?
+        prepare_aur_build(target, force, yes)?
     };
+
+    // Authoritative gate on exactly what we will build: verdict + TOFU. Records
+    // the approval once consent is given.
+    gate_with_tofu(&store, &key, &bundle, &verdict, force, yes)?;
 
     println!("{} building in a network-denied sandbox…", "vouch:".bold());
     let outcome = vouch_build::build_in_sandbox(&build_dir)?;
@@ -127,43 +180,37 @@ fn build(target: &str, force: bool, yes: bool) -> Result<()> {
     for p in &outcome.packages {
         println!("  {} {}", "✓".green(), p.display());
     }
+    let list = outcome
+        .packages
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
     println!(
         "  {} review then install with: {}",
         "→".dimmed(),
-        format!(
-            "sudo pacman -U {}",
-            outcome
-                .packages
-                .iter()
-                .map(|p| p.display().to_string())
-                .collect::<Vec<_>>()
-                .join(" ")
-        )
-        .dimmed()
+        format!("sudo pacman -U {list}").dimmed()
     );
     Ok(())
 }
 
-/// Audit a local package directory (scan only) and apply the gate.
-fn audit_local_and_gate(dir: &Path, force: bool, yes: bool) -> Result<()> {
-    let bundle = vouch_pkgbuild::load_local(dir).context("loading local PKGBUILD")?;
-    let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("local");
-    let verdict = vouch_security::scan_only(name, &bundle);
-    print_findings(&verdict);
-    gate(&verdict, force, yes)
-}
-
-/// Audit an AUR package, gate, clone its repo, re-audit the cloned recipe, and
-/// return the directory to build.
-fn audit_aur_and_clone(package: &str, force: bool, yes: bool) -> Result<PathBuf> {
+/// Fetch + audit an AUR package, refuse early on a clearly bad verdict, then
+/// clone the full repo and return what to build (the cloned recipe is what the
+/// gate and TOFU then act on — it is exactly what gets built).
+fn prepare_aur_build(
+    package: &str,
+    force: bool,
+    yes: bool,
+) -> Result<(PathBuf, String, SourceBundle, Verdict)> {
     let meta = vouch_rpc::info(package)
         .context("looking up package on the AUR")?
         .with_context(|| format!("'{package}' is not in the AUR"))?;
-    let bundle =
+    let fetched =
         vouch_pkgbuild::fetch(&meta.package_base).context("fetching the package build recipe")?;
-    let verdict = vouch_security::evaluate(&meta, &bundle, now_unix());
+    let verdict = vouch_security::evaluate(&meta, &fetched, now_unix());
     print_meta(&meta);
     print_findings(&verdict);
+    // Don't even clone a package we'd refuse to build.
     gate(&verdict, force, yes)?;
 
     let dest = unique_build_dir(&meta.package_base);
@@ -174,22 +221,75 @@ fn audit_aur_and_clone(package: &str, force: bool, yes: bool) -> Result<PathBuf>
     );
     vouch_pkgbuild::clone(&meta.package_base, &dest).context("cloning AUR repo")?;
 
-    // Defense in depth: re-scan exactly what we cloned (and will build), in
-    // case it differs from the metadata-time fetch.
+    // Re-scan the cloned recipe — what we actually build — rather than trusting
+    // the metadata-time fetch.
     let cloned = vouch_pkgbuild::load_local(&dest).context("loading cloned PKGBUILD")?;
-    let reverdict = vouch_security::scan_only(&meta.package_base, &cloned);
-    if reverdict.score > verdict.score {
-        println!(
-            "{} cloned recipe scored higher than metadata fetch — re-vetting",
-            "vouch:".yellow()
-        );
-        print_findings(&reverdict);
-        gate(&reverdict, force, yes)?;
-    }
-    Ok(dest)
+    let cverdict = vouch_security::scan_only(&meta.package_base, &cloned);
+    Ok((dest, meta.package_base, cloned, cverdict))
 }
 
-/// Enforce the verdict before any build happens.
+/// Combine the static verdict with the TOFU change check, then — on consent —
+/// record the approval. This is what makes a legitimate but custom recipe a
+/// one-time review: unchanged recipes proceed quietly; changed ones force a
+/// fresh look at the diff.
+fn gate_with_tofu(
+    store: &ReviewStore,
+    key: &str,
+    bundle: &SourceBundle,
+    verdict: &Verdict,
+    force: bool,
+    yes: bool,
+) -> Result<()> {
+    let files = reviewed_files(bundle);
+    match store.status(key, &files)? {
+        ReviewStatus::New => {
+            println!(
+                "{} first time vouching this recipe (trust-on-first-use)",
+                "vouch:".bold()
+            );
+            gate(verdict, force, yes)?;
+        }
+        ReviewStatus::Unchanged { record } => {
+            println!(
+                "{} unchanged since you vouched it {} (risk was {}/100)",
+                "vouch:".bold(),
+                human_since(record.approved_at),
+                record.score_at_approval
+            );
+            // Even an unchanged recipe is re-checked: a newly-added rule or IoC
+            // can move a previously-vouched recipe to REFUSED.
+            if verdict.decision == Decision::Refused {
+                gate(verdict, force, yes)?;
+            }
+        }
+        ReviewStatus::Changed { previous, .. } => {
+            println!(
+                "{} {} this recipe CHANGED since you vouched it {}",
+                "vouch:".bold(),
+                "⚠".yellow().bold(),
+                human_since(previous.approved_at)
+            );
+            print_review_diff(&render_diff(&previous, &files));
+            // A change always demands fresh consent, whatever the score.
+            if verdict.decision == Decision::Refused {
+                gate(verdict, force, yes)?;
+            } else if !yes {
+                bail!(
+                    "recipe changed since your last vouch. Review the diff above, then \
+                     re-run with --yes to vouch for the new version."
+                );
+            }
+        }
+    }
+
+    // We reached here without bailing → consent given. Record it.
+    store
+        .approve(key, files, verdict.score, now_unix())
+        .context("recording review approval")?;
+    Ok(())
+}
+
+/// Enforce the static verdict before any build happens.
 fn gate(verdict: &Verdict, force: bool, yes: bool) -> Result<()> {
     match verdict.decision {
         Decision::Vouched => Ok(()),
@@ -222,17 +322,53 @@ fn gate(verdict: &Verdict, force: bool, yes: bool) -> Result<()> {
     }
 }
 
-fn unique_build_dir(base: &str) -> PathBuf {
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    std::env::temp_dir().join(format!("vouch-build-{base}-{stamp}"))
+// ----------------------------------------------------------------------------
+// forget
+// ----------------------------------------------------------------------------
+
+fn forget(package: &str) -> Result<()> {
+    let store = ReviewStore::open_default().context("opening the review store")?;
+    if store.forget(package)? {
+        println!("{} forgot review record for {package}", "vouch:".bold());
+    } else {
+        println!("{} no review record for {package}", "vouch:".bold());
+    }
+    Ok(())
 }
 
 // ----------------------------------------------------------------------------
 // presentation
 // ----------------------------------------------------------------------------
+
+fn reviewed_files(bundle: &SourceBundle) -> Vec<ReviewedFile> {
+    bundle
+        .files()
+        .map(|(name, content)| ReviewedFile::new(name, content))
+        .collect()
+}
+
+fn human_since(ts: i64) -> String {
+    let days = (now_unix() - ts).max(0) / 86_400;
+    match days {
+        0 => "today".to_string(),
+        1 => "yesterday".to_string(),
+        n => format!("{n} days ago"),
+    }
+}
+
+fn print_review_diff(diff: &str) {
+    for line in diff.lines() {
+        if let Some(name) = line.strip_prefix("--- ") {
+            println!("    {} {}", "in".dimmed(), name.bold());
+        } else if line.starts_with('+') {
+            println!("    {}", line.green());
+        } else if line.starts_with('-') {
+            println!("    {}", line.red());
+        } else {
+            println!("    {}", line.dimmed());
+        }
+    }
+}
 
 fn print_meta(meta: &PackageMeta) {
     println!(
@@ -297,6 +433,14 @@ fn severity_color(s: Severity) -> AnsiColors {
         Severity::Low => AnsiColors::BrightBlue,
         Severity::Info => AnsiColors::BrightBlack,
     }
+}
+
+fn unique_build_dir(base: &str) -> PathBuf {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    std::env::temp_dir().join(format!("vouch-build-{base}-{stamp}"))
 }
 
 /// 0 = vouched, 1 = review required, 2 = refused, 3 = error (set by `fail`).

@@ -56,10 +56,12 @@ pub fn build_in_sandbox(pkgdir: &Path) -> Result<BuildOutcome> {
         bail!("source download / integrity verification failed");
     }
 
-    // Phase 2: extract, prepare, build, package — NETWORK DENIED.
+    // Phase 2: extract, prepare, build, package — NETWORK DENIED. `-f` so a
+    // rebuild of an already-vouched package overwrites the stale artifact
+    // instead of erroring out.
     let status = Sandbox::new(&pkgdir)
         .allow_network(false)
-        .run(MAKEPKG, ["--noconfirm", "--nodeps"])
+        .run(MAKEPKG, ["--noconfirm", "--nodeps", "-f"])
         .context("sandboxed build phase")?;
     if !status.success() {
         bail!("build failed inside the network-denied sandbox");

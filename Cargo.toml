@@ -6,6 +6,7 @@ members = [
     "crates/vouch-pkgbuild",
     "crates/vouch-sandbox",
     "crates/vouch-build",
+    "crates/vouch-review",
     "crates/vouch-security",
     "crates/vouch-cli",
 ]
@@ -26,6 +27,8 @@ ureq = "2"
 clap = { version = "4", features = ["derive"] }
 owo-colors = "4"
 regex = "1"
+sha2 = "0.10"
+similar = "2"
 
 [profile.release]
 lto = "thin"

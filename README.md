@@ -44,13 +44,22 @@ vouch: REVIEW REQUIRED needs your review before installing (risk 31/100)
   with the network **off**, so a recipe can't pull a payload. Produces a
   `.pkg.tar.*` for you to install with `pacman -U`. Refuses to build if a
   sandbox can't be established — never falls back to an unsandboxed build.
+- **Trust-on-first-use (TOFU)**: `vouch` records the exact recipe you approved.
+  A later build of the *same, unchanged* recipe proceeds with low friction; if
+  the PKGBUILD or a `.install` hook **changed since you vouched for it**, the
+  build stops and shows you a diff of exactly what changed before you re-approve
+  with `--yes`. This is the direct countermeasure to a *malicious update of an
+  already-trusted package* — the heart of the "Atomic Arch" attack. A legitimate
+  but custom recipe is therefore a **one-time** review, not a per-build nag.
+- `vouch forget <pkg>` — drop a stored approval and re-arm TOFU for it.
 
 ### Roadmap
 
 - [x] No-network build sandbox (bubblewrap)
 - [x] Audit-gated build path
+- [x] TOFU review state + change-diff gating
 - [ ] `vouch -S`: dependency resolution + build order + `pacman -U` install
-- [ ] PKGBUILD diff vs last reviewed version (TOFU review state)
+- [ ] Per-package opt-in for build-time network (electron/npm packages)
 - [ ] Community IoC feed checks (e.g. `aur-malware-check`)
 - [ ] ALPM integration (repo packages, installed-version checks)
 - [ ] In-sandbox dependency provisioning (drop `--nodeps`)
@@ -73,6 +82,7 @@ vouch-pkgbuild   read-only fetch / local load / clone of PKGBUILD + .install
 vouch-security   the engine: trust + scan + scoring
 vouch-sandbox    hardened, network-denied bubblewrap build sandbox
 vouch-build      two-phase sandboxed makepkg orchestration
+vouch-review     trust-on-first-use review state + recipe change diffs
 vouch-cli        the `vouch` binary
 ```
 

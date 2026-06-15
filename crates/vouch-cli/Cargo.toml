@@ -16,6 +16,7 @@ vouch-pkgbuild = { path = "../vouch-pkgbuild" }
 vouch-security = { path = "../vouch-security" }
 vouch-build = { path = "../vouch-build" }
 vouch-sandbox = { path = "../vouch-sandbox" }
+vouch-review = { path = "../vouch-review" }
 clap.workspace = true
 anyhow.workspace = true
 owo-colors.workspace = true
