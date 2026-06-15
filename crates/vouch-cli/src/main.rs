@@ -8,6 +8,7 @@
 //!   sandbox. Records your approval. Does not install.
 //! * `install <pkg…>` — resolve the AUR dependency graph, vet every package,
 //!   build in order, and install with pacman. `--dry-run` plans only.
+//! * `upgrade` — rebuild installed AUR packages with newer AUR versions.
 //! * `forget <pkg>` — drop the stored review record for a package.
 //! * `ioc` — show / import indicators-of-compromise feeds.
 
@@ -446,24 +447,11 @@ fn install(
     let plan = vouch_resolve::resolve_many(&roots).context("resolving dependencies")?;
     print_plan(&plan);
 
-    // Vet (and, unless dry-run, build) every AUR package in dependency order.
-    // A single REFUSED package aborts the whole operation — dependencies are
-    // an attack surface too.
-    let mut built: Vec<(String, Vec<PathBuf>)> = Vec::new();
-    for name in &plan.aur_build_order {
-        println!("\n{} {}", "::".blue().bold(), name.bold());
-        if dry_run {
-            dry_run_vet(name)?;
-            continue;
-        }
-        let (dest, key, bundle, verdict) = prepare_aur_build(name, force, yes)?;
-        let build_network = gate_with_tofu(&store, &key, &bundle, &verdict, force, yes, allow_net)?;
-        announce_build(build_network);
-        let outcome = vouch_build::build_in_sandbox(&dest, build_network)?;
-        built.push((name.clone(), outcome.packages));
-    }
-
     if dry_run {
+        for name in &plan.aur_build_order {
+            println!("\n{} {}", "::".blue().bold(), name.bold());
+            dry_run_vet(name)?;
+        }
         println!(
             "\n{} dry run — nothing built or installed.",
             "vouch:".bold()
@@ -472,7 +460,43 @@ fn install(
         return Ok(());
     }
 
-    pacman_install(&plan, &built, yes)
+    // One consent up front, after the full plan is on screen. Everything below
+    // runs pacman via sudo.
+    if !yes
+        && !confirm(&format!(
+            "Proceed to build & install {} AUR package(s) (runs pacman via sudo)?",
+            plan.aur_build_order.len()
+        ))?
+    {
+        bail!("cancelled by user");
+    }
+
+    // 1. Install repo dependencies up front so each sandboxed makepkg can find
+    //    its declared deps (we never let makepkg fetch them itself).
+    if !plan.repo_deps.is_empty() {
+        let deps: Vec<&str> = plan.repo_deps.iter().map(String::as_str).collect();
+        pacman_sync(&deps)?;
+    }
+
+    // 2. Build and install each AUR package in dependency order. Installing a
+    //    built dependency before its dependents lets the next build's makepkg
+    //    check pass — every package is vetted before it is built.
+    for name in &plan.aur_build_order {
+        println!("\n{} {}", "::".blue().bold(), name.bold());
+        let (dest, key, bundle, verdict) = prepare_aur_build(name, force, yes)?;
+        let build_network = gate_with_tofu(&store, &key, &bundle, &verdict, force, yes, allow_net)?;
+        announce_build(build_network);
+        let outcome = vouch_build::build_in_sandbox(&dest, build_network)?;
+        let as_dep = !plan.explicit_targets.contains(name);
+        pacman_install_file(&outcome.packages, as_dep)?;
+    }
+
+    println!(
+        "\n{} {}",
+        "vouch:".bold(),
+        "installation complete".green().bold()
+    );
+    Ok(())
 }
 
 /// Print the resolved plan up front so the user sees the whole blast radius.
@@ -485,7 +509,7 @@ fn print_plan(plan: &vouch_resolve::ResolvedPlan) {
     );
     if !plan.repo_deps.is_empty() {
         println!(
-            "  repo dependencies (pacman will resolve): {}",
+            "  repo dependencies (installed via pacman -S): {}",
             plan.repo_deps.join(" ").dimmed()
         );
     }
@@ -515,78 +539,70 @@ fn dry_run_vet(name: &str) -> Result<()> {
 /// Print the exact pacman commands an install would run.
 fn print_pacman_plan(plan: &vouch_resolve::ResolvedPlan) {
     let sudo = if is_root() { "" } else { "sudo " };
-    println!(
-        "  {} {sudo}pacman -U --asdeps <built AUR dependencies>",
-        "would run:".dimmed()
-    );
-    println!(
-        "  {} {sudo}pacman -U <built {}>",
-        "would run:".dimmed(),
-        plan.explicit_targets.join(", ")
-    );
-    println!(
-        "  {}",
-        "(pacman resolves and installs the repo dependencies listed above)".dimmed()
-    );
-}
-
-/// Install the built packages with pacman: dependencies as `--asdeps`, the
-/// explicitly-requested targets as explicit. pacman pulls repo deps itself.
-fn pacman_install(
-    plan: &vouch_resolve::ResolvedPlan,
-    built: &[(String, Vec<PathBuf>)],
-    yes: bool,
-) -> Result<()> {
-    let mut dep_pkgs: Vec<&PathBuf> = Vec::new();
-    let mut explicit_pkgs: Vec<&PathBuf> = Vec::new();
-    for (name, pkgs) in built {
-        if plan.explicit_targets.contains(name) {
-            explicit_pkgs.extend(pkgs.iter());
-        } else {
-            dep_pkgs.extend(pkgs.iter());
-        }
-    }
-
-    println!("\n{} ready to install:", "vouch:".bold());
-    if !dep_pkgs.is_empty() {
+    if !plan.repo_deps.is_empty() {
         println!(
-            "  dependencies (--asdeps): {}",
-            join_paths(&dep_pkgs).dimmed()
+            "  {} {sudo}pacman -S --asdeps --needed {}",
+            "would run:".dimmed(),
+            plan.repo_deps.join(" ")
         );
     }
-    println!("  targets: {}", join_paths(&explicit_pkgs).bold());
+    for name in &plan.aur_build_order {
+        let asdeps = if plan.explicit_targets.contains(name) {
+            ""
+        } else {
+            "--asdeps "
+        };
+        println!(
+            "  {} {sudo}pacman -U {asdeps}<built {name}>",
+            "would run:".dimmed()
+        );
+    }
+}
 
-    if !yes && !confirm("Proceed with pacman installation?")? {
-        bail!("installation cancelled by user");
+/// A `pacman` command, prefixed with `sudo` unless we're already root.
+fn pacman_cmd() -> std::process::Command {
+    if is_root() {
+        std::process::Command::new("pacman")
+    } else {
+        let mut c = std::process::Command::new("sudo");
+        c.arg("pacman");
+        c
     }
+}
 
-    if !dep_pkgs.is_empty() {
-        run_pacman(&["-U", "--asdeps", "--needed"], &dep_pkgs)?;
-    }
-    if !explicit_pkgs.is_empty() {
-        run_pacman(&["-U", "--needed"], &explicit_pkgs)?;
-    }
+/// Install repo dependencies as dependencies (`pacman -S --asdeps --needed`).
+fn pacman_sync(names: &[&str]) -> Result<()> {
     println!(
-        "{} {}",
+        "{} installing repo dependencies: {}",
         "vouch:".bold(),
-        "installation complete".green().bold()
+        names.join(" ").dimmed()
     );
+    let status = pacman_cmd()
+        .args(["-S", "--asdeps", "--needed", "--noconfirm"])
+        .args(names)
+        .status()
+        .context("running pacman -S")?;
+    if !status.success() {
+        bail!("pacman failed to install repo dependencies");
+    }
     Ok(())
 }
 
-fn run_pacman(args: &[&str], pkgs: &[&PathBuf]) -> Result<()> {
-    let (program, lead): (&str, &[&str]) = if is_root() {
-        ("pacman", &[])
-    } else {
-        ("sudo", &["pacman"])
-    };
-    let mut cmd = std::process::Command::new(program);
-    cmd.args(lead)
-        .args(args)
-        .args(pkgs.iter().map(|p| p.as_os_str()));
-    let status = cmd.status().context("running pacman")?;
+/// Install built `*.pkg.tar.*` files (`pacman -U`). Dependencies are installed
+/// `--asdeps`; explicit targets as explicit.
+fn pacman_install_file(pkgs: &[PathBuf], as_dep: bool) -> Result<()> {
+    if pkgs.is_empty() {
+        return Ok(());
+    }
+    let mut cmd = pacman_cmd();
+    cmd.args(["-U", "--needed", "--noconfirm"]);
+    if as_dep {
+        cmd.arg("--asdeps");
+    }
+    cmd.args(pkgs.iter().map(|p| p.as_os_str()));
+    let status = cmd.status().context("running pacman -U")?;
     if !status.success() {
-        bail!("pacman exited with failure");
+        bail!("pacman failed to install the built package");
     }
     Ok(())
 }
@@ -603,13 +619,6 @@ fn is_root() -> bool {
         })
         .map(|euid| euid == "0")
         .unwrap_or(false)
-}
-
-fn join_paths(pkgs: &[&PathBuf]) -> String {
-    pkgs.iter()
-        .map(|p| p.display().to_string())
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 fn confirm(prompt: &str) -> Result<bool> {

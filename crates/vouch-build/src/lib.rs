@@ -64,11 +64,16 @@ pub fn build_in_sandbox(pkgdir: &Path, allow_build_network: bool) -> Result<Buil
     }
 
     // Phase 2: extract, prepare, build, package. Network denied by default;
-    // allowed only by explicit per-package opt-in. `-f` so a rebuild of an
-    // already-vouched package overwrites the stale artifact instead of erroring.
+    // allowed only by explicit per-package opt-in. `-f` overwrites a stale
+    // artifact. We do *not* pass `--nodeps`: makepkg verifies declared
+    // dependencies against the (read-only) local pacman db, so a build with a
+    // missing dependency fails fast with a clear message instead of a cryptic
+    // compile error. `vouch install` pre-installs the repo dependencies so the
+    // check passes; it never lets makepkg fetch/install anything itself
+    // (no `-s`), keeping the build offline.
     let status = Sandbox::new(&pkgdir)
         .allow_network(allow_build_network)
-        .run(MAKEPKG, ["--noconfirm", "--nodeps", "-f"])
+        .run(MAKEPKG, ["--noconfirm", "-f"])
         .context("sandboxed build phase")?;
     if !status.success() {
         bail!("build failed inside the network-denied sandbox");

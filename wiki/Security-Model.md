@@ -70,7 +70,10 @@ from the AUR — matching your real trust configuration.
 
 ## Honest limitations
 
-- Builds currently pass `--nodeps`; make-dependencies must already be present.
+- `vouch install`/`upgrade` install dependencies for you (repo deps via
+  `pacman -S`, AUR deps built and installed in order). Bare `vouch build` does
+  not install anything, so it needs the declared dependencies already present
+  (it now reports a clear "missing dependencies" error instead of failing mid-build).
 - `--force` and `--allow-build-network` are escape hatches: explicit, logged, and
   per-package, but they do relax guarantees by your choice.
 - The static scanner is a heuristic. It is one layer; the sandbox and TOFU are the

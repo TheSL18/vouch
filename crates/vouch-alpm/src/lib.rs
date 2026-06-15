@@ -48,6 +48,16 @@ impl Db {
             .any(|db| db.pkgs().find_satisfier(dep).is_some())
     }
 
+    /// The name of the repository package that satisfies `dep` (resolving
+    /// provides, version constraints and sonames to a concrete, installable
+    /// package name). `None` if no configured repo satisfies it.
+    pub fn provider(&self, dep: &str) -> Option<String> {
+        self.handle
+            .syncdbs()
+            .iter()
+            .find_map(|db| db.pkgs().find_satisfier(dep).map(|p| p.name().to_string()))
+    }
+
     /// The installed version of `name`, or `None` if it isn't installed.
     pub fn installed_version(&self, name: &str) -> Option<String> {
         self.handle

@@ -77,7 +77,11 @@ confianza.
 
 ## Limitaciones honestas
 
-- Las compilaciones usan `--nodeps`; las make-dependencies deben estar ya presentes.
+- `vouch install`/`upgrade` instalan las dependencias por ti (las de repos con
+  `pacman -S`, las AUR compiladas e instaladas en orden). El `vouch build` a secas
+  no instala nada, así que necesita que las dependencias declaradas ya estén
+  presentes (ahora da un error claro de "missing dependencies" en vez de fallar a
+  mitad de compilación).
 - `--force` y `--allow-build-network` son válvulas de escape: explícitas, logueadas
   y por-paquete, pero relajan garantías por elección tuya.
 - El scanner estático es una heurística. Es una capa; el sandbox y el TOFU son las

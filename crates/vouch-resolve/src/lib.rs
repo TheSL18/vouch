@@ -107,14 +107,18 @@ pub fn resolve_many(targets: &[&str]) -> Result<ResolvedPlan> {
             }
             // A dep is a build target only if the AUR has it AND no configured
             // repo can satisfy it (the original atom keeps version precision).
-            let repo_has = alpm.as_ref().is_some_and(|a| a.repo_satisfies(raw));
-            if aur_names.contains(&name) && !repo_has {
+            // Resolve via libalpm: the provider is the concrete package name a
+            // repo would install (handles provides/versions/sonames).
+            let provider = alpm.as_ref().and_then(|a| a.provider(raw));
+            if aur_names.contains(&name) && provider.is_none() {
                 node_edges.insert(name.clone());
                 if aur_nodes.insert(name.clone()) {
                     queue.push_back(name);
                 }
             } else {
-                repo_deps.insert(name);
+                // Store the concrete provider name (falling back to the bare
+                // name) so it can be handed straight to `pacman -S`.
+                repo_deps.insert(provider.unwrap_or(name));
             }
         }
     }
