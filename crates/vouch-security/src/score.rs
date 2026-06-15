@@ -40,7 +40,7 @@ pub fn build_verdict(package: &str, findings: Vec<Finding>) -> Verdict {
 
     // Show the worst findings first.
     let mut findings = findings;
-    findings.sort_by(|a, b| b.severity.cmp(&a.severity));
+    findings.sort_by_key(|f| std::cmp::Reverse(f.severity));
 
     Verdict {
         package: package.to_string(),
