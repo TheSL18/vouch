@@ -8,6 +8,7 @@ members = [
     "crates/vouch-build",
     "crates/vouch-review",
     "crates/vouch-resolve",
+    "crates/vouch-ioc",
     "crates/vouch-security",
     "crates/vouch-cli",
 ]

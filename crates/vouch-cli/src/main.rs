@@ -6,7 +6,10 @@
 //! * `build <pkg|dir>` — audit, gate on the verdict *and* on whether the recipe
 //!   changed since you last vouched (TOFU), then build inside a network-denied
 //!   sandbox. Records your approval. Does not install.
+//! * `install <pkg…>` — resolve the AUR dependency graph, vet every package,
+//!   build in order, and install with pacman. `--dry-run` plans only.
 //! * `forget <pkg>` — drop the stored review record for a package.
+//! * `ioc` — show / import indicators-of-compromise feeds.
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -74,6 +77,13 @@ enum Command {
         /// Package name (or local directory name) to forget.
         package: String,
     },
+    /// Show loaded indicators of compromise, or import a feed.
+    Ioc {
+        /// Import and merge a JSON IoC feed (e.g. a community list) into your
+        /// local indicators.
+        #[arg(long, value_name = "FILE")]
+        import: Option<PathBuf>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -97,6 +107,10 @@ fn main() -> ExitCode {
             Err(e) => fail(e),
         },
         Command::Forget { package } => match forget(&package) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => fail(e),
+        },
+        Command::Ioc { import } => match ioc(import.as_deref()) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => fail(e),
         },
@@ -539,6 +553,49 @@ fn confirm(prompt: &str) -> Result<bool> {
         .read_line(&mut line)
         .context("reading confirmation")?;
     Ok(matches!(line.trim(), "y" | "Y" | "yes"))
+}
+
+// ----------------------------------------------------------------------------
+// ioc
+// ----------------------------------------------------------------------------
+
+fn ioc(import: Option<&Path>) -> Result<()> {
+    if let Some(path) = import {
+        let total = vouch_ioc::import_feed(path).context("importing IoC feed")?;
+        let dest = vouch_ioc::user_feed_path()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        println!(
+            "{} imported feed — {total} indicators now in {}",
+            "vouch:".bold(),
+            dest.dimmed()
+        );
+        return Ok(());
+    }
+
+    let ind = vouch_ioc::Indicators::load_default();
+    println!("{} indicators of compromise loaded:", "vouch:".bold());
+    println!("  bad package names: {}", ind.bad_package_names.len());
+    println!("  bad maintainers:   {}", ind.bad_maintainers.len());
+    println!("  bad strings:       {}", ind.bad_strings.len());
+    println!("  bad sha256 hashes: {}", ind.bad_sha256.len());
+    if let Some(path) = vouch_ioc::user_feed_path() {
+        let state = if path.exists() {
+            "loaded"
+        } else {
+            "not present"
+        };
+        println!(
+            "  user feed: {} ({state})",
+            path.display().to_string().dimmed()
+        );
+        println!(
+            "  {} import community lists with: {}",
+            "→".dimmed(),
+            "vouch ioc --import <file.json>".dimmed()
+        );
+    }
+    Ok(())
 }
 
 // ----------------------------------------------------------------------------

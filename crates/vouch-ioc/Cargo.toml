@@ -1,5 +1,5 @@
 [package]
-name = "vouch-security"
+name = "vouch-ioc"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,6 +7,7 @@ authors.workspace = true
 
 [dependencies]
 vouch-core = { path = "../vouch-core" }
-vouch-pkgbuild = { path = "../vouch-pkgbuild" }
-vouch-ioc = { path = "../vouch-ioc" }
-regex.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true

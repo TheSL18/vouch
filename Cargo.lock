@@ -739,6 +739,7 @@ dependencies = [
  "serde_json",
  "vouch-build",
  "vouch-core",
+ "vouch-ioc",
  "vouch-pkgbuild",
  "vouch-resolve",
  "vouch-review",
@@ -752,6 +753,17 @@ name = "vouch-core"
 version = "0.1.0"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "vouch-ioc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "sha2",
+ "vouch-core",
 ]
 
 [[package]]
@@ -807,6 +819,7 @@ version = "0.1.0"
 dependencies = [
  "regex",
  "vouch-core",
+ "vouch-ioc",
  "vouch-pkgbuild",
 ]
 

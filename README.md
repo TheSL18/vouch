@@ -32,7 +32,8 @@ vouch: REVIEW REQUIRED needs your review before installing (risk 31/100)
 | **Trust** | Orphaned / freshly-adopted packages, low community votes, very recent updates, out-of-date flags. |
 | **Static scan** | `npm`/`bun`/`pip` installs at build time, `curl \| bash`, eBPF / `getdents64` hooks, base64-obfuscated payloads, setuid bits, persistence (cron, systemd, shell rc, autostart), downloads from ephemeral hosts or raw IPs, history wiping. |
 | **Structural scan** | Network calls inside `build()`/`package()` (sources belong in `source=()`), and `.install` hook functions that run as **root**. |
-| **Scoring** | Severity-weighted risk score (0–100). Any `Critical` finding ⇒ refused outright. |
+| **IoC / threat intel** | Matches recipes against known-bad indicators — the "Atomic Arch" npm payload names (`atomic-lockfile`, `js-digest`, `lockfile-js`), plus banned maintainers, hijacked package names, malicious strings/domains and file hashes from updatable community feeds. Any match is `Critical`. |
+| **Scoring** | Severity-weighted risk score (0–100); each rule counts once. Any `Critical` finding ⇒ refused outright. |
 
 ## Status
 
@@ -57,6 +58,9 @@ vouch: REVIEW REQUIRED needs your review before installing (risk 31/100)
   the repo dependencies). `--dry-run` resolves + vets + prints the plan without
   building or installing anything.
 - `vouch forget <pkg>` — drop a stored approval and re-arm TOFU for it.
+- `vouch ioc` — show loaded indicators of compromise; `vouch ioc --import
+  <file.json>` merges a community feed (e.g. `aur-malware-check`) into your
+  local indicators.
 
 ### Roadmap
 
@@ -64,8 +68,8 @@ vouch: REVIEW REQUIRED needs your review before installing (risk 31/100)
 - [x] Audit-gated build path
 - [x] TOFU review state + change-diff gating
 - [x] `vouch install`: recursive dependency resolution + build order + pacman
+- [x] IoC / threat-intel feed checks (built-in + importable)
 - [ ] Per-package opt-in for build-time network (electron/npm packages)
-- [ ] Community IoC feed checks (e.g. `aur-malware-check`)
 - [ ] ALPM integration (precise repo-vs-AUR, installed-version checks)
 - [ ] In-sandbox dependency provisioning (drop `--nodeps`)
 
@@ -89,6 +93,7 @@ vouch-sandbox    hardened, network-denied bubblewrap build sandbox
 vouch-build      two-phase sandboxed makepkg orchestration
 vouch-review     trust-on-first-use review state + recipe change diffs
 vouch-resolve    recursive AUR dependency resolution + build ordering
+vouch-ioc        indicators-of-compromise / threat-intel matching
 vouch-cli        the `vouch` binary
 ```
 

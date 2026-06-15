@@ -24,8 +24,11 @@ use vouch_pkgbuild::SourceBundle;
 /// the package was updated. Pass it in rather than reading the clock here so
 /// the engine stays pure and testable.
 pub fn evaluate(meta: &PackageMeta, bundle: &SourceBundle, now: i64) -> Verdict {
+    let ioc = vouch_ioc::Indicators::load_default();
     let mut findings = trust::evaluate_at(meta, now);
     findings.extend(scan::evaluate(bundle));
+    findings.extend(ioc.check_meta(&meta.name, meta.maintainer.as_deref()));
+    findings.extend(ioc.scan_content(bundle.files()));
     score::build_verdict(&meta.name, findings)
 }
 
@@ -33,5 +36,9 @@ pub fn evaluate(meta: &PackageMeta, bundle: &SourceBundle, now: i64) -> Verdict 
 /// Used for local package directories (and to re-check a cloned repo against
 /// the exact files we are about to build).
 pub fn scan_only(name: &str, bundle: &SourceBundle) -> Verdict {
-    score::build_verdict(name, scan::evaluate(bundle))
+    let ioc = vouch_ioc::Indicators::load_default();
+    let mut findings = scan::evaluate(bundle);
+    findings.extend(ioc.check_meta(name, None));
+    findings.extend(ioc.scan_content(bundle.files()));
+    score::build_verdict(name, findings)
 }
