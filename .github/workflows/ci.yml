@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    # vouch is an Arch tool: it links libalpm and uses bubblewrap/makepkg, so we
+    # run inside an Arch container with the real toolchain.
+    container: archlinux:base-devel
+    steps:
+      - name: Install toolchain and runtime deps
+        run: |
+          pacman -Syu --noconfirm --needed rust bubblewrap git pacman-contrib
+          rustc --version && cargo --version
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Formatting
+        run: cargo fmt --all --check
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --all
+
+      - name: Release build
+        run: cargo build --release

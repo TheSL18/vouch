@@ -6,6 +6,8 @@
 
 *No aval, no install.*
 
+[![CI](https://github.com/TheSL18/vouch/actions/workflows/ci.yml/badge.svg)](https://github.com/TheSL18/vouch/actions/workflows/ci.yml)
+
 </div>
 
 ---
