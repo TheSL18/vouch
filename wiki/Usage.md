@@ -97,12 +97,20 @@ learn new syntax — both work:
 | `vouch -Syu` | full upgrade: `pacman -Syu` (repos) **then** `vouch upgrade` (AUR) |
 | `vouch -S <pkg…>` | install — repo targets go to `pacman -S`, AUR targets through `vouch install` |
 | `vouch -Ss <query>` | search repos (`pacman -Ss`) **and** the AUR (`vouch search`) |
+| `vouch -Sy <pkg…>` | refresh the sync databases, then install |
 | `vouch -Sy` | refresh the sync databases |
 | `vouch -R…`, `-Q…`, `-U…`, `-F…`, `-T…`, `-D…` | passed straight to `pacman` |
 
 `-h`/`--help` and `-V`/`--version` always show vouch's own help/version.
 
+vouch's gate flags work in this form too — `--force`, `--yes`,
+`--allow-build-network`, `--rmdeps`, `--no-devel`, `--no-sandbox` and
+`--dry-run` apply to the AUR side of a pacman-style command. For example
+`vouch -S session-desktop --force --allow-build-network` or
+`vouch -Syu --no-devel`.
+
 ## Where state lives
 
 - Review approvals (TOFU): `$XDG_DATA_HOME/vouch/reviews/` (default `~/.local/share/vouch/reviews/`).
+- Devel database (built VCS-source commits): `$XDG_DATA_HOME/vouch/devel.json`.
 - IoC user feed: `$XDG_DATA_HOME/vouch/ioc.json`.

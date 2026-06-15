@@ -98,12 +98,20 @@ aprender sintaxis nueva — ambas funcionan:
 | `vouch -Syu` | actualización completa: `pacman -Syu` (repos) **y luego** `vouch upgrade` (AUR) |
 | `vouch -S <pkg…>` | instalar — los targets de repos van a `pacman -S`, los del AUR por `vouch install` |
 | `vouch -Ss <query>` | busca en repos (`pacman -Ss`) **y** en el AUR (`vouch search`) |
+| `vouch -Sy <pkg…>` | refresca las bases de datos y luego instala |
 | `vouch -Sy` | refresca las bases de datos de sincronización |
 | `vouch -R…`, `-Q…`, `-U…`, `-F…`, `-T…`, `-D…` | se pasan directo a `pacman` |
 
 `-h`/`--help` y `-V`/`--version` siempre muestran la ayuda/versión de vouch.
 
+Las flags de gate de vouch también funcionan en esta sintaxis — `--force`,
+`--yes`, `--allow-build-network`, `--rmdeps`, `--no-devel`, `--no-sandbox` y
+`--dry-run` aplican a la parte AUR de un comando estilo pacman. Por ejemplo
+`vouch -S session-desktop --force --allow-build-network` o
+`vouch -Syu --no-devel`.
+
 ## Dónde se guarda el estado
 
 - Aprobaciones de revisión (TOFU): `$XDG_DATA_HOME/vouch/reviews/` (por defecto `~/.local/share/vouch/reviews/`).
+- Base de datos devel (commits VCS construidos): `$XDG_DATA_HOME/vouch/devel.json`.
 - Feed de IoC del usuario: `$XDG_DATA_HOME/vouch/ioc.json`.

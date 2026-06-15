@@ -63,7 +63,8 @@ Useful flags: `--dry-run` (plan only), `--yes` (accept REVIEW / a changed recipe
 `--force` (override a REFUSED verdict — discouraged), `--allow-build-network`
 (let a recipe fetch at build time; per-package, remembered, reduces isolation),
 `--rmdeps` (remove build-only dependencies after installing), `--no-devel`
-(`upgrade` only: skip the VCS/`-git` upstream-commit check, which is on by default),
+(`upgrade` only: skip the VCS upstream-commit check, which is on by default —
+see the devel database below),
 `--no-sandbox` (build without isolation, for recipes that need FUSE/unionfs like
 some flutter/electron packages — the recipe is still vetted).
 
@@ -75,12 +76,15 @@ drop-in:
 ```console
 vouch -Syu              # full upgrade: repos via pacman, then the AUR via vouch
 vouch -S <pkg…>         # install (repo targets → pacman, AUR targets → vouch)
+vouch -Sy <pkg…>        # refresh sync databases, then install
 vouch -Ss <query>       # search repos + the AUR
 vouch -Sy               # refresh sync databases
 vouch -R/-Q/-U/… <…>    # handed straight to pacman
 ```
 
-Both styles work; use whichever you prefer.
+Both styles work; use whichever you prefer. vouch's gate flags apply in either
+form, so `vouch -S <pkg> --force` and `vouch -Syu --no-devel` work just like the
+subcommand spelling.
 
 Exit codes: `0` vouched · `1` review required · `2` refused · `3` error.
 
@@ -114,6 +118,23 @@ For an AUR install, `vouch`:
    dependency is installed before the next layer (its dependents) is built.
 5. **Installs** the built packages with `pacman -U`.
 
+### Devel (VCS) upgrades
+
+VCS packages keep the same `pkgver` until rebuilt, so a version check can't tell
+when their upstream moved. `vouch upgrade`/`-Syu` handle this two ways (skip with
+`--no-devel`):
+
+- **Devel database** — whenever `vouch` builds a package whose recipe has a VCS
+  `source=()`, it records the exact upstream commit(s) it built against
+  (`$XDG_DATA_HOME/vouch/devel.json`). Later it re-queries each source with
+  `git ls-remote` and rebuilds if any advanced. Because tracking keys on the
+  recipe's *sources*, it catches packages that build from a moving git branch
+  but ship a release-style version with **no `-git` suffix** (e.g.
+  `session-desktop`) — once `vouch` has built them once.
+- **Name + version heuristic** — for `-git`/`-svn`/… packages `vouch` hasn't
+  built yet, it compares the upstream `HEAD` to the commit baked into the
+  installed version.
+
 ## Build
 
 ```sh
@@ -140,6 +161,7 @@ vouch-sandbox    hardened, network-denied bubblewrap build sandbox
 vouch-build      two-phase sandboxed makepkg orchestration
 vouch-review     trust-on-first-use review state + recipe change diffs
 vouch-resolve    recursive AUR dependency resolution + build ordering + upgrades
+vouch-devel      devel database: tracks built VCS-source commits for upgrades
 vouch-alpm       libalpm queries: precise repo-vs-AUR, installed versions
 vouch-ioc        indicators-of-compromise / threat-intel matching
 vouch-cli        the `vouch` binary
