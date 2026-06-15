@@ -25,7 +25,8 @@ rust-version = "1.85"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
-ureq = "2"
+ureq = { version = "2", default-features = false, features = ["native-tls", "gzip"] }
+native-tls = "0.2"
 clap = { version = "4", features = ["derive"] }
 owo-colors = "4"
 regex = "1"

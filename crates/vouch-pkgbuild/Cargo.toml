@@ -6,5 +6,6 @@ authors.workspace = true
 
 [dependencies]
 ureq.workspace = true
+native-tls.workspace = true
 anyhow.workspace = true
 regex.workspace = true

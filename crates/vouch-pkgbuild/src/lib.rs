@@ -16,6 +16,18 @@ use regex::Regex;
 const CGIT_PLAIN: &str = "https://aur.archlinux.org/cgit/aur.git/plain";
 const USER_AGENT: &str = concat!("vouch/", env!("CARGO_PKG_VERSION"));
 
+/// A shared HTTP agent using the system's native TLS (OpenSSL), built once.
+fn agent() -> &'static ureq::Agent {
+    use std::sync::OnceLock;
+    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+    AGENT.get_or_init(|| {
+        let connector = native_tls::TlsConnector::new().expect("initialize native-tls");
+        ureq::AgentBuilder::new()
+            .tls_connector(std::sync::Arc::new(connector))
+            .build()
+    })
+}
+
 /// One fetched file from the package repo.
 #[derive(Debug, Clone)]
 pub struct SourceFile {
@@ -47,7 +59,8 @@ impl SourceBundle {
 fn fetch_plain(package_base: &str, file: &str) -> Result<String> {
     // cgit `plain` view: .../plain/<file>?h=<package_base>
     let url = format!("{CGIT_PLAIN}/{file}?h={package_base}");
-    let resp = ureq::get(&url)
+    let resp = agent()
+        .get(&url)
         .set("User-Agent", USER_AGENT)
         .call()
         .with_context(|| format!("fetching {file} for {package_base}"))?;

@@ -11,6 +11,18 @@ use vouch_core::PackageMeta;
 const RPC_BASE: &str = "https://aur.archlinux.org/rpc/v5";
 const USER_AGENT: &str = concat!("vouch/", env!("CARGO_PKG_VERSION"));
 
+/// A shared HTTP agent using the system's native TLS (OpenSSL), built once.
+fn agent() -> &'static ureq::Agent {
+    use std::sync::OnceLock;
+    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+    AGENT.get_or_init(|| {
+        let connector = native_tls::TlsConnector::new().expect("initialize native-tls");
+        ureq::AgentBuilder::new()
+            .tls_connector(std::sync::Arc::new(connector))
+            .build()
+    })
+}
+
 /// Raw shape of one entry in the RPC `results` array. The AUR uses PascalCase
 /// keys; absent arrays come back as JSON `null`, so the dependency fields are
 /// `Option` and defaulted on the way into [`PackageMeta`].
@@ -79,7 +91,8 @@ impl From<RpcResult> for PackageMeta {
 
 /// GET `url` and parse the standard RPC envelope, surfacing RPC-level errors.
 fn get(url: &str) -> Result<Vec<PackageMeta>> {
-    let body = ureq::get(url)
+    let body = agent()
+        .get(url)
         .set("User-Agent", USER_AGENT)
         .call()
         .context("querying AUR RPC")?

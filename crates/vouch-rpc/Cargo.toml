@@ -9,4 +9,5 @@ vouch-core = { path = "../vouch-core" }
 serde.workspace = true
 serde_json.workspace = true
 ureq.workspace = true
+native-tls.workspace = true
 anyhow.workspace = true
