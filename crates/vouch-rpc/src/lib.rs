@@ -89,17 +89,36 @@ impl From<RpcResult> for PackageMeta {
     }
 }
 
-/// GET `url` and parse the standard RPC envelope, surfacing RPC-level errors.
-fn get(url: &str) -> Result<Vec<PackageMeta>> {
-    let body = agent()
-        .get(url)
-        .set("User-Agent", USER_AGENT)
-        .call()
-        .context("querying AUR RPC")?
-        .into_string()
-        .context("reading AUR RPC response body")?;
+/// Execute a request with a few retries on transient transport/EOF errors
+/// (the AUR occasionally resets connections), returning the response body.
+/// HTTP status errors are returned immediately — they aren't transient.
+#[allow(clippy::result_large_err)] // ureq::Error is large; it's ureq's type, not ours
+fn execute(make: impl Fn() -> std::result::Result<ureq::Response, ureq::Error>) -> Result<String> {
+    let mut delay = std::time::Duration::from_millis(200);
+    let mut last = String::new();
+    for attempt in 1..=4 {
+        match make() {
+            Ok(resp) => match resp.into_string() {
+                Ok(body) => return Ok(body),
+                Err(e) => last = format!("reading response body: {e}"),
+            },
+            Err(ureq::Error::Status(code, resp)) => {
+                let body = resp.into_string().unwrap_or_default();
+                return Err(anyhow!("AUR RPC returned HTTP {code}: {body}"));
+            }
+            Err(e) => last = e.to_string(),
+        }
+        if attempt < 4 {
+            std::thread::sleep(delay);
+            delay = (delay * 3).min(std::time::Duration::from_secs(2));
+        }
+    }
+    Err(anyhow!("AUR RPC request failed after retries: {last}"))
+}
 
-    let resp: RpcResponse = serde_json::from_str(&body).context("parsing AUR RPC JSON response")?;
+/// Parse the standard RPC envelope, surfacing RPC-level errors.
+fn parse_envelope(body: &str) -> Result<Vec<PackageMeta>> {
+    let resp: RpcResponse = serde_json::from_str(body).context("parsing AUR RPC JSON response")?;
     if resp.kind == "error" {
         return Err(anyhow!(
             "AUR RPC error: {}",
@@ -107,6 +126,14 @@ fn get(url: &str) -> Result<Vec<PackageMeta>> {
         ));
     }
     Ok(resp.results.into_iter().map(PackageMeta::from).collect())
+}
+
+/// GET `url` and parse the standard RPC envelope.
+#[allow(clippy::result_large_err)]
+fn get(url: &str) -> Result<Vec<PackageMeta>> {
+    let body = execute(|| agent().get(url).set("User-Agent", USER_AGENT).call())
+        .context("querying AUR RPC")?;
+    parse_envelope(&body)
 }
 
 /// Look up a single package by exact name. `Ok(None)` if the AUR has no such
@@ -128,19 +155,25 @@ pub fn search(query: &str) -> Result<Vec<PackageMeta>> {
 
 /// Look up many packages in one request. The result contains only the names
 /// that exist in the AUR, in unspecified order.
+///
+/// Uses POST: with many packages a GET URL grows long enough that the AUR drops
+/// the connection ("unexpected EOF"). The RPC `info` endpoint accepts the same
+/// `arg[]` parameters as a form body.
+#[allow(clippy::result_large_err)]
 pub fn info_many(pkgs: &[&str]) -> Result<Vec<PackageMeta>> {
     if pkgs.is_empty() {
         return Ok(Vec::new());
     }
-    let mut url = format!("{RPC_BASE}/info");
-    let mut sep = '?';
-    for p in pkgs {
-        url.push(sep);
-        url.push_str("arg[]=");
-        url.push_str(&urlencode(p));
-        sep = '&';
-    }
-    get(&url)
+    let url = format!("{RPC_BASE}/info");
+    let form: Vec<(&str, &str)> = pkgs.iter().map(|p| ("arg[]", *p)).collect();
+    let body = execute(|| {
+        agent()
+            .post(&url)
+            .set("User-Agent", USER_AGENT)
+            .send_form(&form)
+    })
+    .context("querying AUR RPC")?;
+    parse_envelope(&body)
 }
 
 /// Percent-encode the characters that actually matter for a query value.
