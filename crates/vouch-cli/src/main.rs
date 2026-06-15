@@ -81,6 +81,23 @@ enum Command {
         #[arg(long)]
         allow_build_network: bool,
     },
+    /// Upgrade installed AUR packages whose AUR version is newer (like `-Syu`
+    /// for the AUR layer). Vets and rebuilds each in the sandbox before install.
+    #[command(visible_alias = "u")]
+    Upgrade {
+        /// Build even if a verdict is REFUSED (strongly discouraged).
+        #[arg(long)]
+        force: bool,
+        /// Proceed past REVIEW verdicts / changed recipes without stopping.
+        #[arg(long)]
+        yes: bool,
+        /// Only list what would be upgraded; build/install nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Allow the build phase to access the network (electron/npm recipes).
+        #[arg(long)]
+        allow_build_network: bool,
+    },
     /// Forget the stored review record for a package (re-arms TOFU for it).
     Forget {
         /// Package name (or local directory name) to forget.
@@ -118,6 +135,15 @@ fn main() -> ExitCode {
             dry_run,
             allow_build_network,
         } => match install(&targets, force, yes, dry_run, allow_build_network) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => fail(e),
+        },
+        Command::Upgrade {
+            force,
+            yes,
+            dry_run,
+            allow_build_network,
+        } => match upgrade(force, yes, dry_run, allow_build_network) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => fail(e),
         },
@@ -594,6 +620,37 @@ fn confirm(prompt: &str) -> Result<bool> {
         .read_line(&mut line)
         .context("reading confirmation")?;
     Ok(matches!(line.trim(), "y" | "Y" | "yes"))
+}
+
+// ----------------------------------------------------------------------------
+// upgrade (-Syu for the AUR layer)
+// ----------------------------------------------------------------------------
+
+fn upgrade(force: bool, yes: bool, dry_run: bool, allow_net: bool) -> Result<()> {
+    let upgrades = vouch_resolve::find_upgrades().context("checking for AUR upgrades")?;
+    if upgrades.is_empty() {
+        println!("{} all AUR packages are up to date", "vouch:".bold());
+        return Ok(());
+    }
+
+    println!(
+        "{} {} AUR upgrade(s) available:",
+        "vouch:".bold(),
+        upgrades.len()
+    );
+    for u in &upgrades {
+        println!(
+            "  {} {} {} {}",
+            u.name.bold(),
+            u.installed.dimmed(),
+            "→".dimmed(),
+            u.available.green()
+        );
+    }
+    println!();
+
+    let targets: Vec<String> = upgrades.into_iter().map(|u| u.name).collect();
+    install(&targets, force, yes, dry_run, allow_net)
 }
 
 // ----------------------------------------------------------------------------

@@ -56,6 +56,28 @@ impl Db {
             .ok()
             .map(|p| p.version().to_string())
     }
+
+    /// Installed packages that no configured repository provides — i.e. the
+    /// "foreign" packages, which on a normal system are exactly the ones that
+    /// came from the AUR. Returns `(name, installed_version)`.
+    pub fn foreign_packages(&self) -> Vec<(String, String)> {
+        self.handle
+            .localdb()
+            .pkgs()
+            .iter()
+            .filter_map(|p| {
+                let name = p.name();
+                let in_repo = self.handle.syncdbs().iter().any(|db| db.pkg(name).is_ok());
+                (!in_repo).then(|| (name.to_string(), p.version().to_string()))
+            })
+            .collect()
+    }
+}
+
+/// Whether `available` is a strictly newer version than `installed`, using
+/// libalpm's own version-comparison rules (epochs, `pkgrel`, etc.).
+pub fn newer(available: &str, installed: &str) -> bool {
+    alpm::vercmp(installed, available) == std::cmp::Ordering::Less
 }
 
 /// Read a single scalar from `pacman-conf` (e.g. `DBPath`, `RootDir`).

@@ -1,83 +1,91 @@
-# vouch
+<div align="center">
+
+# 🐺 vouch
 
 **A security-first AUR helper that vouches for packages before it installs them.**
 
+*No aval, no install.*
+
+</div>
+
+---
+
 `vouch` is an [AUR](https://aur.archlinux.org/) helper for Arch Linux that refuses
-to install anything it can't *vouch* for. Before building or installing a package
-it runs a set of validations and produces a risk verdict — only then does it act.
+to install anything it cannot *vouch* for. Before a package is built or installed
+it passes through layered checks; only then does `vouch` act. Classic helpers
+(`yay`, `paru`) execute a package's recipe as-is — `vouch` inverts that default.
 
 It was born as a direct response to the June 2026 **"Atomic Arch"** supply-chain
 attack, in which attackers adopted orphaned AUR packages and modified their
 `PKGBUILD` / `.install` files to pull a malicious npm package (`atomic-lockfile`,
-`js-digest`) that dropped an infostealer and an eBPF rootkit. Classic AUR helpers
-(`yay`, `paru`) executed those recipes blindly. `vouch` inverts that default:
-**no aval, no install.**
+`js-digest`) that dropped an infostealer and an eBPF rootkit.
 
-```
-$ vouch audit google-chrome
-vouch: vetting google-chrome 149.0.7827.114-1
-  maintainer: gromit   votes: 2353   popularity: 13.11
-
-  ✗ HIGH     Writes to an autostart / shell-init / scheduler location [PKGBUILD:67]
-  ! MEDIUM   Defines a post_install() hook (runs as root) [google-chrome.install:10]
-  · LOW      Updated within the last 7 days
-
-vouch: REVIEW REQUIRED needs your review before installing (risk 31/100)
+```console
+$ vouch install some-aur-app
+vouch: vetting some-aur-app 2.1.0-1
+  maintainer: jane   votes: 1820   popularity: 22.4
+  ✗ CRITICAL Pipes a downloaded file straight into a shell [some-aur-app.install:7]
+vouch: REFUSED refuses to install this package (risk 60/100)
 ```
 
-## What it validates
+## Defense in depth
 
-| Layer | Signal |
-|-------|--------|
-| **Trust** | Orphaned / freshly-adopted packages, low community votes, very recent updates, out-of-date flags. |
-| **Static scan** | `npm`/`bun`/`pip` installs at build time, `curl \| bash`, eBPF / `getdents64` hooks, base64-obfuscated payloads, setuid bits, persistence (cron, systemd, shell rc, autostart), downloads from ephemeral hosts or raw IPs, history wiping. |
-| **Structural scan** | Network calls inside `build()`/`package()` (sources belong in `source=()`), and `.install` hook functions that run as **root**. |
-| **IoC / threat intel** | Matches recipes against known-bad indicators — the "Atomic Arch" npm payload names (`atomic-lockfile`, `js-digest`, `lockfile-js`), plus banned maintainers, hijacked package names, malicious strings/domains and file hashes from updatable community feeds. Any match is `Critical`. |
-| **Scoring** | Severity-weighted risk score (0–100); each rule counts once. Any `Critical` finding ⇒ refused outright. |
+`vouch` layers independent checks so a single bypass isn't enough:
 
-## Status
+| Layer | What it does |
+|-------|--------------|
+| **Trust** | Flags orphaned / freshly-adopted packages, low community votes, very recent updates, out-of-date flags. |
+| **Behavioral scan** | Detects `npm`/`bun`/`pip` installs at build time, `curl \| bash`, eBPF / `getdents64` hooks, base64-obfuscated payloads, setuid bits, persistence (cron, systemd, shell rc, autostart), downloads from ephemeral hosts / raw IPs, history wiping. |
+| **Structural scan** | Understands shell functions: network calls inside `build()`/`package()` (sources belong in `source=()`), and `.install` hooks that run as **root**. |
+| **Threat intel (IoC)** | Matches recipes against known-bad indicators — the Atomic Arch npm payload names, plus banned maintainers, hijacked package names, malicious strings/domains and file hashes from updatable feeds. Any match is `Critical`. |
+| **Build sandbox** | Builds inside bubblewrap with the **network unshared** during `build()`/`package()`, so a recipe has no route to fetch a payload. Refuses to build if it can't sandbox. |
+| **TOFU** | Remembers the exact recipe you approved; a later build of the *unchanged* recipe is low-friction, but a change stops you and shows a **diff** of what changed — the countermeasure to a malicious update of an already-trusted package. |
 
-- `vouch audit <pkg>` — fetch a package's real AUR metadata + recipe and print
-  a verdict. **Read-only**; never builds.
-- `vouch build <pkg|dir>` — audit, gate on the verdict, then build inside a
-  **network-denied sandbox** (bubblewrap). Two phases: sources are fetched and
-  checksum-verified with the network on; `prepare()`/`build()`/`package()` run
-  with the network **off**, so a recipe can't pull a payload. Produces a
-  `.pkg.tar.*` for you to install with `pacman -U`. Refuses to build if a
-  sandbox can't be established — never falls back to an unsandboxed build.
-- **Trust-on-first-use (TOFU)**: `vouch` records the exact recipe you approved.
-  A later build of the *same, unchanged* recipe proceeds with low friction; if
-  the PKGBUILD or a `.install` hook **changed since you vouched for it**, the
-  build stops and shows you a diff of exactly what changed before you re-approve
-  with `--yes`. This is the direct countermeasure to a *malicious update of an
-  already-trusted package* — the heart of the "Atomic Arch" attack. A legitimate
-  but custom recipe is therefore a **one-time** review, not a per-build nag.
-- `vouch install <pkg…>` (alias `i`) — resolve the full AUR dependency graph,
-  **vet every package in it** (deps are an attack surface too), build them in
-  dependency order in the sandbox, and install with `pacman` (which resolves
-  the repo dependencies). `--dry-run` resolves + vets + prints the plan without
-  building or installing anything.
-- `vouch forget <pkg>` — drop a stored approval and re-arm TOFU for it.
-- `vouch ioc` — show loaded indicators of compromise; `vouch ioc --import
-  <file.json>` merges a community feed (e.g. `aur-malware-check`) into your
-  local indicators.
-- **Build-time network opt-in**: for recipes that legitimately fetch at build
-  time (electron/npm/cargo/go), `--allow-build-network` keeps the network on
-  during the build phase. It is per-package, requires the package to still pass
-  vetting, is remembered for the *unchanged* recipe (a change re-decides it),
-  and prints a clear reduced-isolation warning.
+The scoring engine turns findings into a 0–100 risk score (each rule counts once).
+Any `Critical` finding refuses the package outright; otherwise the verdict is
+**vouched** (proceed), **review required** (needs `--yes`), or **refused**.
 
-### Roadmap
+## Commands
 
-- [x] No-network build sandbox (bubblewrap)
-- [x] Audit-gated build path
-- [x] TOFU review state + change-diff gating
-- [x] `vouch install`: recursive dependency resolution + build order + pacman
-- [x] IoC / threat-intel feed checks (built-in + importable)
-- [x] Per-package opt-in for build-time network (electron/npm packages)
-- [x] ALPM integration (precise repo-vs-AUR via libalpm, installed versions)
-- [ ] In-sandbox dependency provisioning (drop `--nodeps`)
-- [ ] `-Syu`: detect installed AUR packages with newer AUR versions
+```console
+vouch audit <pkg>            # fetch + vet a package, print a verdict (read-only)
+vouch build <pkg|dir>        # vet, then build in the network-denied sandbox
+vouch install <pkg…>         # resolve deps, vet the whole tree, build in order, install
+vouch upgrade                # rebuild installed AUR packages with newer AUR versions
+vouch ioc [--import FILE]    # show / import indicators-of-compromise feeds
+vouch forget <pkg>           # drop a stored approval (re-arms TOFU)
+```
+
+Useful flags: `--dry-run` (plan only), `--yes` (accept REVIEW / a changed recipe),
+`--force` (override a REFUSED verdict — discouraged), `--allow-build-network`
+(let a recipe fetch at build time; per-package, remembered, reduces isolation).
+
+Exit codes: `0` vouched · `1` review required · `2` refused · `3` error.
+
+### Examples
+
+```console
+$ vouch install pamac-aur --dry-run     # see the full plan + per-package verdicts
+$ vouch build ./my-pkgbuild-dir         # vet & build a local recipe
+$ vouch upgrade --dry-run               # list AUR packages with newer versions
+$ vouch ioc --import aur-malware.json   # load a community IoC feed
+```
+
+## How it works
+
+For an AUR install, `vouch`:
+
+1. **Resolves** the full dependency graph (recursively) and splits it into AUR
+   build targets and repo dependencies, using `libalpm` to classify precisely —
+   provides, version constraints, sonames and every configured repo (including
+   `chaotic-aur`, `cachyos`, …). A package available as a signed binary is
+   preferred over an AUR rebuild.
+2. **Vets every AUR package** in the tree (trust + behavioral + structural +
+   IoC). A dependency is an attack surface too, so all of them are checked.
+3. **Builds** each package in dependency order inside a network-denied
+   bubblewrap sandbox: sources are fetched and checksum-verified with the
+   network on, then `build()`/`package()` run with the network **off**.
+4. **Installs** with `pacman`, which resolves the repo dependencies.
 
 ## Build
 
@@ -86,7 +94,13 @@ cargo build --release
 ./target/release/vouch audit <package>
 ```
 
-Exit codes: `0` vouched · `1` review required · `2` refused · `3` error.
+`vouch` is an Arch Linux tool: it links `libalpm` and uses `bubblewrap`,
+`makepkg` and `pacman` at runtime.
+
+## Documentation
+
+See the [`wiki/`](wiki/) directory for full docs in **English** and **Spanish**
+(installation, usage, the security model, and an FAQ).
 
 ## Workspace layout
 
@@ -94,16 +108,25 @@ Exit codes: `0` vouched · `1` review required · `2` refused · `3` error.
 vouch-core       shared types (PackageMeta, Finding, Severity, Verdict)
 vouch-rpc        AUR RPC v5 client
 vouch-pkgbuild   read-only fetch / local load / clone of PKGBUILD + .install
-vouch-security   the engine: trust + scan + scoring
+vouch-security   the engine: trust + scan + IoC + scoring
 vouch-sandbox    hardened, network-denied bubblewrap build sandbox
 vouch-build      two-phase sandboxed makepkg orchestration
 vouch-review     trust-on-first-use review state + recipe change diffs
-vouch-resolve    recursive AUR dependency resolution + build ordering
+vouch-resolve    recursive AUR dependency resolution + build ordering + upgrades
 vouch-alpm       libalpm queries: precise repo-vs-AUR, installed versions
 vouch-ioc        indicators-of-compromise / threat-intel matching
 vouch-cli        the `vouch` binary
 ```
 
-## License
+## Roadmap
 
-MIT OR Apache-2.0
+- [x] Network-denied build sandbox (bubblewrap)
+- [x] Audit-gated build path
+- [x] TOFU review state + change-diff gating
+- [x] `vouch install`: recursive dependency resolution + build order + pacman
+- [x] IoC / threat-intel feed checks (built-in + importable)
+- [x] Per-package opt-in for build-time network (electron/npm packages)
+- [x] ALPM integration (precise repo-vs-AUR via libalpm, installed versions)
+- [x] `vouch upgrade`: AUR-layer `-Syu`
+- [ ] In-sandbox dependency provisioning (drop `--nodeps`)
+- [ ] Parallel builds of independent dependency-graph branches

@@ -127,6 +127,47 @@ pub fn resolve_many(targets: &[&str]) -> Result<ResolvedPlan> {
     })
 }
 
+/// An installed AUR package with a newer version available upstream.
+#[derive(Debug, Clone)]
+pub struct Upgrade {
+    pub name: String,
+    pub installed: String,
+    pub available: String,
+}
+
+/// Find installed AUR (foreign) packages whose AUR version is newer than what
+/// is installed. Packages no longer in the AUR are skipped.
+pub fn find_upgrades() -> Result<Vec<Upgrade>> {
+    let alpm = vouch_alpm::Db::open().context("opening libalpm")?;
+    let foreign = alpm.foreign_packages();
+    if foreign.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Query the AUR for current versions, in chunks to keep URLs sane.
+    let names: Vec<&str> = foreign.iter().map(|(n, _)| n.as_str()).collect();
+    let mut available: BTreeMap<String, String> = BTreeMap::new();
+    for chunk in names.chunks(50) {
+        for meta in vouch_rpc::info_many(chunk).context("querying AUR versions")? {
+            available.insert(meta.name.clone(), meta.version.clone());
+        }
+    }
+
+    let mut upgrades: Vec<Upgrade> = foreign
+        .into_iter()
+        .filter_map(|(name, installed)| {
+            let avail = available.get(&name)?;
+            vouch_alpm::newer(avail, &installed).then(|| Upgrade {
+                name,
+                installed,
+                available: avail.clone(),
+            })
+        })
+        .collect();
+    upgrades.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(upgrades)
+}
+
 /// Strip a version constraint / soname tail from a dependency atom:
 /// `pacman>6.1` → `pacman`, `go>=1.24` → `go`, `libalpm.so>=14` → `libalpm.so`.
 pub fn strip_version(dep: &str) -> &str {
