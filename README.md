@@ -64,6 +64,21 @@ Useful flags: `--dry-run` (plan only), `--yes` (accept REVIEW / a changed recipe
 (let a recipe fetch at build time; per-package, remembered, reduces isolation),
 `--rmdeps` (remove build-only dependencies after installing).
 
+### pacman-style syntax
+
+`vouch` also accepts pacman-style flags, like `yay`/`paru`, so it can be a
+drop-in:
+
+```console
+vouch -Syu              # full upgrade: repos via pacman, then the AUR via vouch
+vouch -S <pkg…>         # install (repo targets → pacman, AUR targets → vouch)
+vouch -Ss <query>       # search repos + the AUR
+vouch -Sy               # refresh sync databases
+vouch -R/-Q/-U/… <…>    # handed straight to pacman
+```
+
+Both styles work; use whichever you prefer.
+
 Exit codes: `0` vouched · `1` review required · `2` refused · `3` error.
 
 ### Examples

@@ -12,12 +12,14 @@
 //! * `forget <pkg>` — drop the stored review record for a package.
 //! * `ioc` — show / import indicators-of-compromise feeds.
 
+mod compat;
+
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 use owo_colors::{AnsiColors, OwoColorize};
 use vouch_core::{Decision, PackageMeta, Severity, Verdict};
@@ -129,6 +131,15 @@ enum Command {
 }
 
 fn main() -> ExitCode {
+    // Accept pacman-style invocations (`vouch -Syu`, `-S pkg`, `-Ss query`, …)
+    // alongside vouch's own subcommands. -h/-V still go to clap.
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    if raw.first().is_some_and(|a| {
+        a.starts_with('-') && !matches!(a.as_str(), "-h" | "--help" | "-V" | "--version")
+    }) {
+        return run_pacman_style(&raw);
+    }
+
     let cli = Cli::parse();
     match cli.command {
         Command::Audit { package, json } => match audit(&package, json) {
@@ -190,6 +201,117 @@ fn now_unix() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+// ----------------------------------------------------------------------------
+// pacman-style front-end (so `vouch -Syu` etc. work like yay/paru)
+// ----------------------------------------------------------------------------
+
+fn run_pacman_style(raw: &[String]) -> ExitCode {
+    let res = match compat::parse(raw) {
+        compat::Action::FullUpgrade { targets, noconfirm } => full_upgrade(&targets, noconfirm),
+        compat::Action::Install { targets, noconfirm } => install_targets(&targets, noconfirm),
+        compat::Action::Search { query } => {
+            // Repo matches first (read-only pacman), then the AUR via vouch.
+            let mut a = vec!["-Ss".to_string()];
+            a.extend(query.iter().cloned());
+            let _ = run_pacman_raw(&a, false);
+            search(&query.join(" "))
+        }
+        compat::Action::Refresh { noconfirm } => {
+            let mut a = vec!["-Sy".to_string()];
+            if noconfirm {
+                a.push("--noconfirm".into());
+            }
+            run_pacman_raw(&a, true)
+        }
+        compat::Action::Passthrough { sudo } => run_pacman_raw(raw, sudo),
+        compat::Action::Unsupported(msg) => Err(anyhow!(
+            "{msg}. For AUR operations use vouch's subcommands \
+             (e.g. `vouch install <pkg>`, `vouch upgrade`, `vouch search <q>`)."
+        )),
+    };
+    match res {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => fail(e),
+    }
+}
+
+/// `-Syu`: upgrade the repos with pacman, then the AUR layer with vouch, then
+/// install any extra targets.
+fn full_upgrade(targets: &[String], noconfirm: bool) -> Result<()> {
+    let mut a = vec!["-Syu".to_string()];
+    if noconfirm {
+        a.push("--noconfirm".into());
+    }
+    println!("{} upgrading repo packages…", "vouch:".bold());
+    run_pacman_raw(&a, true)?;
+
+    println!("{} upgrading AUR packages…", "vouch:".bold());
+    upgrade(false, noconfirm, false, false, false)?;
+
+    if !targets.is_empty() {
+        install_targets(targets, noconfirm)?;
+    }
+    Ok(())
+}
+
+/// `-S <targets>`: repo targets go to pacman, AUR targets through vouch's
+/// vetted install pipeline.
+fn install_targets(targets: &[String], noconfirm: bool) -> Result<()> {
+    let (repo, aur) = classify_targets(targets);
+    if !repo.is_empty() {
+        println!(
+            "{} installing repo packages: {}",
+            "vouch:".bold(),
+            repo.join(" ").dimmed()
+        );
+        let mut a = vec!["-S".to_string()];
+        if noconfirm {
+            a.push("--noconfirm".into());
+        }
+        a.extend(repo);
+        run_pacman_raw(&a, true)?;
+    }
+    if !aur.is_empty() {
+        install(&aur, false, noconfirm, false, false, false)?;
+    }
+    Ok(())
+}
+
+/// Split install targets into (repo, AUR): a target a configured repo can
+/// satisfy goes to pacman; otherwise, if it's an AUR package, to vouch; an
+/// unknown name is left to pacman to report.
+fn classify_targets(targets: &[String]) -> (Vec<String>, Vec<String>) {
+    let db = vouch_alpm::Db::open().ok();
+    let mut repo = Vec::new();
+    let mut aur = Vec::new();
+    for t in targets {
+        if db.as_ref().is_some_and(|d| d.repo_satisfies(t)) {
+            repo.push(t.clone());
+        } else if vouch_rpc::info(t).ok().flatten().is_some() {
+            aur.push(t.clone());
+        } else {
+            repo.push(t.clone());
+        }
+    }
+    (repo, aur)
+}
+
+/// Run `pacman` (via `sudo` unless we're root, or directly for read-only ops)
+/// with the given arguments.
+fn run_pacman_raw(args: &[String], sudo: bool) -> Result<()> {
+    let mut cmd = if sudo {
+        pacman_cmd()
+    } else {
+        std::process::Command::new("pacman")
+    };
+    cmd.args(args);
+    let status = cmd.status().context("running pacman")?;
+    if !status.success() {
+        bail!("pacman exited with failure");
+    }
+    Ok(())
 }
 
 // ----------------------------------------------------------------------------

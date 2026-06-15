@@ -66,6 +66,21 @@ $ vouch ioc                          # show indicator counts and the feed path
 $ vouch ioc --import aur-malware.json # merge a community list (e.g. aur-malware-check)
 ```
 
+## pacman-style syntax
+
+`vouch` accepts pacman-style flags too (like `yay`/`paru`), so you don't have to
+learn new syntax — both work:
+
+| pacman-style | equivalent |
+|--------------|------------|
+| `vouch -Syu` | full upgrade: `pacman -Syu` (repos) **then** `vouch upgrade` (AUR) |
+| `vouch -S <pkg…>` | install — repo targets go to `pacman -S`, AUR targets through `vouch install` |
+| `vouch -Ss <query>` | search repos (`pacman -Ss`) **and** the AUR (`vouch search`) |
+| `vouch -Sy` | refresh the sync databases |
+| `vouch -R…`, `-Q…`, `-U…`, `-F…`, `-T…`, `-D…` | passed straight to `pacman` |
+
+`-h`/`--help` and `-V`/`--version` always show vouch's own help/version.
+
 ## Where state lives
 
 - Review approvals (TOFU): `$XDG_DATA_HOME/vouch/reviews/` (default `~/.local/share/vouch/reviews/`).

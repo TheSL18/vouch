@@ -66,6 +66,21 @@ $ vouch ioc                           # muestra contadores de indicadores y la r
 $ vouch ioc --import aur-malware.json # mergea una lista comunitaria (p.ej. aur-malware-check)
 ```
 
+## Sintaxis estilo pacman
+
+`vouch` también acepta flags estilo pacman (como `yay`/`paru`), así no tienes que
+aprender sintaxis nueva — ambas funcionan:
+
+| estilo pacman | equivalente |
+|---------------|-------------|
+| `vouch -Syu` | actualización completa: `pacman -Syu` (repos) **y luego** `vouch upgrade` (AUR) |
+| `vouch -S <pkg…>` | instalar — los targets de repos van a `pacman -S`, los del AUR por `vouch install` |
+| `vouch -Ss <query>` | busca en repos (`pacman -Ss`) **y** en el AUR (`vouch search`) |
+| `vouch -Sy` | refresca las bases de datos de sincronización |
+| `vouch -R…`, `-Q…`, `-U…`, `-F…`, `-T…`, `-D…` | se pasan directo a `pacman` |
+
+`-h`/`--help` y `-V`/`--version` siempre muestran la ayuda/versión de vouch.
+
 ## Dónde se guarda el estado
 
 - Aprobaciones de revisión (TOFU): `$XDG_DATA_HOME/vouch/reviews/` (por defecto `~/.local/share/vouch/reviews/`).
