@@ -1,12 +1,10 @@
 [package]
-name = "vouch-resolve"
+name = "vouch-alpm"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 
 [dependencies]
-vouch-core = { path = "../vouch-core" }
-vouch-rpc = { path = "../vouch-rpc" }
-vouch-alpm = { path = "../vouch-alpm" }
 anyhow.workspace = true
+alpm = "4"

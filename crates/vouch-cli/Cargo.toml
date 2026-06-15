@@ -19,6 +19,7 @@ vouch-sandbox = { path = "../vouch-sandbox" }
 vouch-review = { path = "../vouch-review" }
 vouch-resolve = { path = "../vouch-resolve" }
 vouch-ioc = { path = "../vouch-ioc" }
+vouch-alpm = { path = "../vouch-alpm" }
 clap.workspace = true
 anyhow.workspace = true
 owo-colors.workspace = true

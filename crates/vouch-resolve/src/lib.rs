@@ -16,15 +16,15 @@
 //! you typed.
 //!
 //! Classification rule: a dependency is an AUR build target iff it exists as an
-//! AUR package (the AUR is authoritative for "is this an AUR package?").
-//! Everything else — real repo packages, virtual packages, sonames — is left to
-//! `pacman`, which resolves them at install time. This deliberately avoids
-//! reimplementing soname/provides resolution.
+//! AUR package **and** no configured repository can satisfy it. The repository
+//! side is answered precisely by `libalpm` (via [`vouch_alpm`]), so provides,
+//! version constraints, sonames and third-party repos (`chaotic-aur`,
+//! `cachyos`, …) are all handled — a package available as a signed binary is
+//! preferred over rebuilding it from the AUR.
 //!
-//! Trade-off: a name that exists in *both* the official repos and the AUR is
-//! treated as an AUR build target (so `vouch` vets and sandbox-builds it). Such
-//! collisions are rare; preferring the signed repo copy in that case needs the
-//! sync database and is deferred to the planned ALPM integration.
+//! If ALPM can't be opened, we fall back to "AUR is authoritative" (a dep that
+//! exists in the AUR is built), which is safe — we'd rather vet+sandbox-build
+//! than silently trust.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -57,6 +57,10 @@ pub fn resolve_many(targets: &[&str]) -> Result<ResolvedPlan> {
     let mut queue: VecDeque<String> = VecDeque::new();
     let mut explicit_targets: Vec<String> = Vec::new();
 
+    // Best-effort: if libalpm can't be opened we fall back to AUR-authoritative
+    // classification (a dep that exists in the AUR is built).
+    let alpm = vouch_alpm::Db::open().ok();
+
     for &t in targets {
         let meta = vouch_rpc::info(t)
             .context("looking up target on the AUR")?
@@ -77,16 +81,17 @@ pub fn resolve_many(targets: &[&str]) -> Result<ResolvedPlan> {
             .expect("queued packages always have cached metadata")
             .clone();
 
-        // Unique, version-stripped dependency names.
-        let deps: BTreeSet<String> = meta
-            .build_deps()
-            .map(strip_version)
+        // Keep the original dep atoms (with version/soname) for the precise
+        // repo check, and a unique set of bare names for the AUR lookup.
+        let raw_deps: Vec<String> = meta.build_deps().map(str::to_string).collect();
+        let bare_names: BTreeSet<String> = raw_deps
+            .iter()
+            .map(|d| strip_version(d).to_string())
             .filter(|s| !s.is_empty())
-            .map(str::to_string)
             .collect();
 
         // One RPC call to learn which of these even exist in the AUR.
-        let dep_refs: Vec<&str> = deps.iter().map(String::as_str).collect();
+        let dep_refs: Vec<&str> = bare_names.iter().map(String::as_str).collect();
         let in_aur = vouch_rpc::info_many(&dep_refs).context("classifying dependencies")?;
         let aur_names: BTreeSet<String> = in_aur.iter().map(|m| m.name.clone()).collect();
         for m in in_aur {
@@ -94,16 +99,22 @@ pub fn resolve_many(targets: &[&str]) -> Result<ResolvedPlan> {
         }
 
         let node_edges = edges.entry(pkg.clone()).or_default();
-        for dep in deps {
-            // AUR is authoritative: if the dep is an AUR package, it's a build
-            // target we must vet and build; otherwise pacman handles it.
-            if aur_names.contains(&dep) {
-                node_edges.insert(dep.clone());
-                if aur_nodes.insert(dep.clone()) {
-                    queue.push_back(dep);
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        for raw in &raw_deps {
+            let name = strip_version(raw).to_string();
+            if name.is_empty() || !seen.insert(name.clone()) {
+                continue;
+            }
+            // A dep is a build target only if the AUR has it AND no configured
+            // repo can satisfy it (the original atom keeps version precision).
+            let repo_has = alpm.as_ref().is_some_and(|a| a.repo_satisfies(raw));
+            if aur_names.contains(&name) && !repo_has {
+                node_edges.insert(name.clone());
+                if aur_nodes.insert(name.clone()) {
+                    queue.push_back(name);
                 }
             } else {
-                repo_deps.insert(dep);
+                repo_deps.insert(name);
             }
         }
     }

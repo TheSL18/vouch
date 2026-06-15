@@ -18,6 +18,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "alpm"
+version = "4.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "119e8b82e2473323f2fe4ee81599286430bc9a64b31f5e67eb6dec806858c9cd"
+dependencies = [
+ "alpm-sys",
+ "bitflags",
+]
+
+[[package]]
+name = "alpm-sys"
+version = "4.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4071fa385bbb17c2a6eceb65b9a52e8f5c9f97800b1c125ac09a0f160f36b076"
+dependencies = [
+ "pkg-config",
+]
+
+[[package]]
 name = "anstream"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -78,6 +97,12 @@ name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+
+[[package]]
+name = "bitflags"
+version = "2.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b4388bee8683e3d04af747c73422af53102d2bd24d9eadb6cbc100baef4b43f8"
 
 [[package]]
 name = "block-buffer"
@@ -425,6 +450,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
+name = "pkg-config"
+version = "0.3.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
+
+[[package]]
 name = "potential_utf"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -722,6 +753,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
+name = "vouch-alpm"
+version = "0.1.0"
+dependencies = [
+ "alpm",
+ "anyhow",
+]
+
+[[package]]
 name = "vouch-build"
 version = "0.1.0"
 dependencies = [
@@ -737,6 +776,7 @@ dependencies = [
  "clap",
  "owo-colors",
  "serde_json",
+ "vouch-alpm",
  "vouch-build",
  "vouch-core",
  "vouch-ioc",
@@ -780,6 +820,7 @@ name = "vouch-resolve"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "vouch-alpm",
  "vouch-core",
  "vouch-rpc",
 ]

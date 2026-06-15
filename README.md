@@ -75,8 +75,9 @@ vouch: REVIEW REQUIRED needs your review before installing (risk 31/100)
 - [x] `vouch install`: recursive dependency resolution + build order + pacman
 - [x] IoC / threat-intel feed checks (built-in + importable)
 - [x] Per-package opt-in for build-time network (electron/npm packages)
-- [ ] ALPM integration (precise repo-vs-AUR, installed-version checks)
+- [x] ALPM integration (precise repo-vs-AUR via libalpm, installed versions)
 - [ ] In-sandbox dependency provisioning (drop `--nodeps`)
+- [ ] `-Syu`: detect installed AUR packages with newer AUR versions
 
 ## Build
 
@@ -98,6 +99,7 @@ vouch-sandbox    hardened, network-denied bubblewrap build sandbox
 vouch-build      two-phase sandboxed makepkg orchestration
 vouch-review     trust-on-first-use review state + recipe change diffs
 vouch-resolve    recursive AUR dependency resolution + build ordering
+vouch-alpm       libalpm queries: precise repo-vs-AUR, installed versions
 vouch-ioc        indicators-of-compromise / threat-intel matching
 vouch-cli        the `vouch` binary
 ```

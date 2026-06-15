@@ -699,7 +699,17 @@ fn print_meta(meta: &PackageMeta) {
         "  maintainer: {maint}   votes: {}   popularity: {:.2}",
         meta.num_votes, meta.popularity
     );
+    if let Some(installed) = installed_version(&meta.name) {
+        println!("  {} currently installed: {installed}", "•".dimmed());
+    }
     println!();
+}
+
+/// The installed version of `name`, via libalpm (best-effort).
+fn installed_version(name: &str) -> Option<String> {
+    vouch_alpm::Db::open()
+        .ok()
+        .and_then(|db| db.installed_version(name))
 }
 
 fn print_findings(verdict: &Verdict) {
