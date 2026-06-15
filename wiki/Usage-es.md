@@ -31,11 +31,22 @@
   Con `--no-sandbox` el build corre sin confinar; el paquete **se sigue vetando**
   (trust + scan + IoC + TOFU), solo se quita el aislamiento del build.
 - `--no-devel` (solo `upgrade`) — **los paquetes VCS se revisan por defecto**:
-  `vouch upgrade` y `vouch -Syu` también recompilan los `-git`/`-svn`/… instalados
-  cuyo upstream tiene commits nuevos (compara el `HEAD` upstream con el commit
-  incrustado en la versión instalada, un `git ls-remote` por paquete). Usa
-  `--no-devel` para saltar ese chequeo y ganar velocidad. (Los paquetes con fuente
-  VCS pero versión tipo release no se autodetectan — recompílalos con `vouch -S <pkg>`.)
+  `vouch upgrade` y `vouch -Syu` también recompilan los paquetes de desarrollo
+  cuyo upstream tiene commits nuevos. Dos mecanismos lo alimentan:
+  * **Base de datos devel** — cada vez que vouch construye un paquete cuya recipe
+    tiene una `source=()` VCS, guarda el commit (o commits) upstream exactos
+    contra los que construyó (`$XDG_DATA_HOME/vouch/devel.json`). Después, un
+    `git ls-remote` por fuente le dice con precisión si el upstream avanzó. Como
+    el rastreo se basa en las *fuentes* de la recipe, esto detecta paquetes que
+    se construyen desde una rama git en movimiento pero tienen versión tipo
+    release y **sin sufijo `-git`** (p.ej. `session-desktop`) — una vez que vouch
+    los ha construido al menos una vez.
+  * **Heurística por nombre + versión** — para los `-git`/`-svn`/… que vouch
+    todavía no ha construido, compara el `HEAD` upstream con el commit incrustado
+    en la versión instalada.
+
+  Usa `--no-devel` para saltar ambos chequeos y ganar velocidad. `vouch forget
+  <pkg>` borra el rastreo devel de un paquete (y su registro TOFU).
 
 ## Veredictos y códigos de salida
 

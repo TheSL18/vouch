@@ -27,7 +27,6 @@
 //! than silently trust.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use vouch_core::PackageMeta;
@@ -272,39 +271,70 @@ pub fn find_upgrades() -> Result<Vec<Upgrade>> {
 /// Name suffixes that mark a VCS (development) package.
 const VCS_SUFFIXES: &[&str] = &["-git", "-svn", "-hg", "-bzr", "-cvs", "-darcs"];
 
-/// Find installed VCS/"-git" packages whose upstream has new commits (devel
-/// upgrades). For each, compare the upstream HEAD to the commit hash embedded in
-/// the installed version; if it differs (or can't be determined) the package is
-/// a rebuild candidate. This is the `--devel` counterpart to [`find_upgrades`],
-/// which only catches version-bump upgrades.
+/// Find installed VCS packages whose upstream has new commits (devel upgrades).
+/// This is the `--devel` counterpart to [`find_upgrades`], which only catches
+/// version-bump upgrades.
+///
+/// Candidates come from two sources, so we catch both the obvious and the
+/// subtle:
+///   * packages **vouch has built before** — tracked precisely in the devel
+///     database by their VCS source commits (this catches release-versioned
+///     devel packages like `session-desktop`, which carry no `-git` suffix and
+///     embed no commit in their version);
+///   * any installed foreign package whose **name** ends in `-git`/`-svn`/… —
+///     covered even before vouch has built it, via the commit baked into its
+///     installed version.
+///
+/// A tracked package is flagged when any of its sources advanced past the
+/// recorded commit. An untracked `-git` package is flagged when the upstream
+/// HEAD differs from the commit in its version (or that can't be determined).
 pub fn find_devel_upgrades() -> Result<Vec<Upgrade>> {
     let alpm = vouch_alpm::Db::open().context("opening libalpm")?;
-    let vcs: Vec<(String, String)> = alpm
-        .foreign_packages()
-        .into_iter()
-        .filter(|(n, _)| VCS_SUFFIXES.iter().any(|s| n.ends_with(s)))
-        .collect();
-    if vcs.is_empty() {
+    let foreign = alpm.foreign_packages();
+    if foreign.is_empty() {
+        return Ok(Vec::new());
+    }
+    let devel = vouch_devel::DevelDb::open_default().ok();
+
+    // Candidate set (name -> installed version): suffix-VCS packages, plus any
+    // package vouch already tracks as devel that is still installed.
+    let mut candidates: BTreeMap<String, String> = BTreeMap::new();
+    for (name, ver) in &foreign {
+        if VCS_SUFFIXES.iter().any(|s| name.ends_with(s)) {
+            candidates.insert(name.clone(), ver.clone());
+        }
+    }
+    if let Some(db) = &devel {
+        let installed: BTreeMap<&str, &str> = foreign
+            .iter()
+            .map(|(n, v)| (n.as_str(), v.as_str()))
+            .collect();
+        for name in db.tracked_packages() {
+            if let Some(ver) = installed.get(name.as_str()) {
+                candidates.insert(name.clone(), ver.to_string());
+            }
+        }
+    }
+    if candidates.is_empty() {
         return Ok(Vec::new());
     }
 
     // Keep only those still in the AUR (map name -> package base).
-    let names: Vec<&str> = vcs.iter().map(|(n, _)| n.as_str()).collect();
+    let names: Vec<&str> = candidates.keys().map(String::as_str).collect();
     let mut base_of: BTreeMap<String, String> = BTreeMap::new();
     for m in vouch_rpc::info_many(&names).context("querying AUR")? {
         base_of.insert(m.name.clone(), m.package_base);
     }
 
     let mut upgrades = Vec::new();
-    for (name, installed) in vcs {
-        let Some(base) = base_of.get(&name) else {
+    for (name, installed) in &candidates {
+        let Some(base) = base_of.get(name) else {
             continue;
         };
-        // None (undeterminable) -> rebuild to be safe; Some(false) -> up to date.
-        if upstream_changed(base, &installed).unwrap_or(true) {
+        if devel_changed(devel.as_ref(), name, base, installed) {
             upgrades.push(Upgrade {
-                name,
-                installed,
+                name: name.clone(),
+                installed: installed.clone(),
                 available: "latest commit".to_string(),
             });
         }
@@ -313,32 +343,41 @@ pub fn find_devel_upgrades() -> Result<Vec<Upgrade>> {
     Ok(upgrades)
 }
 
-/// `Some(true)` if the upstream HEAD differs from the commit baked into
-/// `installed_version`, `Some(false)` if the same, `None` if undeterminable.
-fn upstream_changed(package_base: &str, installed_version: &str) -> Option<bool> {
-    let bundle = vouch_pkgbuild::fetch(package_base).ok()?;
-    let url = first_vcs_url(&bundle.pkgbuild)?;
-    let installed = extract_commit(installed_version)?;
-    let head = git_ls_remote_head(&url)?;
-    Some(!head.starts_with(&installed))
+/// Decide whether a devel candidate has new upstream commits. Tracked packages
+/// (built by vouch) are compared precisely against the recorded source commits;
+/// untracked ones fall back to the version-embedded-commit heuristic.
+fn devel_changed(
+    devel: Option<&vouch_devel::DevelDb>,
+    name: &str,
+    package_base: &str,
+    installed_version: &str,
+) -> bool {
+    // Fetching the recipe is the one network/IO step; do it once.
+    let Ok(bundle) = vouch_pkgbuild::fetch(package_base) else {
+        // Can't fetch: don't invent an upgrade for tracked packages, but keep
+        // the conservative "rebuild if unsure" for name-suffix devel packages.
+        return devel.is_none_or(|d| !d.is_tracked(name));
+    };
+
+    if let Some(entry) = devel.and_then(|d| d.get(name)) {
+        let current = vouch_devel::resolve_current(&bundle.pkgbuild);
+        return vouch_devel::entry_has_new_commits(entry, &current);
+    }
+
+    // Untracked: compare upstream HEAD to the commit baked into the version.
+    // None (undeterminable) -> rebuild to be safe.
+    upstream_changed(&bundle.pkgbuild, installed_version).unwrap_or(true)
 }
 
-/// Extract the first VCS source URL from a PKGBUILD, e.g.
-/// `source=('name::git+https://x/y.git#branch=z')` -> `https://x/y.git`.
-fn first_vcs_url(pkgbuild: &str) -> Option<String> {
-    for proto in ["git+", "svn+", "hg+", "bzr+"] {
-        if let Some(start) = pkgbuild.find(proto) {
-            let after = &pkgbuild[start + proto.len()..];
-            let end = after
-                .find(|c: char| c == '#' || c == '\'' || c == '"' || c.is_whitespace() || c == ')')
-                .unwrap_or(after.len());
-            let url = &after[..end];
-            if !url.is_empty() {
-                return Some(url.to_string());
-            }
-        }
-    }
-    None
+/// `Some(true)` if the upstream HEAD differs from the commit baked into
+/// `installed_version`, `Some(false)` if the same, `None` if undeterminable.
+fn upstream_changed(pkgbuild: &str, installed_version: &str) -> Option<bool> {
+    let installed = extract_commit(installed_version)?;
+    // First resolvable git source's current commit.
+    let head = vouch_devel::resolve_current(pkgbuild)
+        .into_values()
+        .next()?;
+    Some(!head.starts_with(&installed))
 }
 
 /// The first hexadecimal run of length >= 7 in a version string (the short
@@ -360,21 +399,6 @@ fn extract_commit(version: &str) -> Option<String> {
         }
     }
     None
-}
-
-/// `git ls-remote <url> HEAD` -> the HEAD commit hash (lowercase), if reachable.
-fn git_ls_remote_head(url: &str) -> Option<String> {
-    let out = Command::new("git")
-        .args(["ls-remote", url, "HEAD"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let line = String::from_utf8_lossy(&out.stdout);
-    line.split_whitespace()
-        .next()
-        .map(|h| h.to_ascii_lowercase())
 }
 
 /// Strip a version constraint / soname tail from a dependency atom:

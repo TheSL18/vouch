@@ -9,4 +9,5 @@ vouch-core = { path = "../vouch-core" }
 vouch-rpc = { path = "../vouch-rpc" }
 vouch-alpm = { path = "../vouch-alpm" }
 vouch-pkgbuild = { path = "../vouch-pkgbuild" }
+vouch-devel = { path = "../vouch-devel" }
 anyhow.workspace = true

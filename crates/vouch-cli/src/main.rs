@@ -741,6 +741,7 @@ fn install(
             for (name, dir, net) in &jobs {
                 let outcome = build_one(dir, *net, no_sandbox)?;
                 pacman_install_file(&outcome.packages, !plan.explicit_targets.contains(name))?;
+                record_devel(name, dir);
             }
         } else {
             build_layer_parallel(&jobs, &plan.explicit_targets, parallelism)?;
@@ -830,7 +831,7 @@ fn build_layer_parallel(
         });
 
         // Replay logs and install in order so output stays readable.
-        for ((name, _, _), result) in chunk.iter().zip(results) {
+        for ((name, dir, _), result) in chunk.iter().zip(results) {
             let (packages, log) = result.with_context(|| format!("building {name}"))?;
             print!("{log}");
             println!(
@@ -840,6 +841,7 @@ fn build_layer_parallel(
                 name.bold()
             );
             pacman_install_file(&packages, !explicit_targets.contains(name))?;
+            record_devel(name, dir);
         }
     }
     Ok(())
@@ -960,6 +962,26 @@ fn pacman_install_file(pkgs: &[PathBuf], as_dep: bool) -> Result<()> {
         bail!("pacman failed to install the built package");
     }
     Ok(())
+}
+
+/// After installing a package, record the upstream commits it was built against
+/// if its recipe has VCS sources, so a later `vouch upgrade --devel` can tell
+/// when upstream moves — even for release-versioned devel packages that carry
+/// no `-git` suffix. Best-effort: never fails the install.
+fn record_devel(package: &str, build_dir: &Path) {
+    let Ok(pkgbuild) = std::fs::read_to_string(build_dir.join("PKGBUILD")) else {
+        return;
+    };
+    if !vouch_devel::has_vcs_sources(&pkgbuild) {
+        return;
+    }
+    let sources = vouch_devel::resolve_current(&pkgbuild);
+    if sources.is_empty() {
+        return;
+    }
+    if let Ok(mut db) = vouch_devel::DevelDb::open_default() {
+        let _ = db.record(package, sources, now_unix());
+    }
 }
 
 /// Best-effort euid check without pulling in libc: read `/proc/self/status`.
@@ -1152,14 +1174,22 @@ fn ioc(import: Option<&Path>) -> Result<()> {
 
 fn forget(package: &str) -> Result<()> {
     let store = ReviewStore::open_default().context("opening the review store")?;
-    if store.forget(package)? {
+    let had_review = store.forget(package)?;
+
+    // Also drop any devel-tracking so the package is treated as fresh.
+    let had_devel = match vouch_devel::DevelDb::open_default() {
+        Ok(mut db) => db.forget(package).unwrap_or(false),
+        Err(_) => false,
+    };
+
+    if had_review || had_devel {
         println!(
-            "{} forgot review record for {package}",
+            "{} forgot saved state for {package}",
             "vouch:".bright_cyan().bold()
         );
     } else {
         println!(
-            "{} no review record for {package}",
+            "{} no saved state for {package}",
             "vouch:".bright_cyan().bold()
         );
     }

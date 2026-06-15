@@ -31,11 +31,21 @@
   With `--no-sandbox` the build runs unconfined; the package is **still vetted**
   (trust + scan + IoC + TOFU), only the build-time isolation is dropped.
 - `--no-devel` (`upgrade` only) — **VCS packages are checked by default**:
-  `vouch upgrade` and `vouch -Syu` also rebuild installed `-git`/`-svn`/… packages
-  whose upstream has new commits (comparing the upstream `HEAD` to the commit
-  baked into the installed version, one `git ls-remote` each). Pass `--no-devel`
-  to skip that check for speed. (Packages built from a VCS source but versioned
-  like a release aren't auto-detected — rebuild those with `vouch -S <pkg>`.)
+  `vouch upgrade` and `vouch -Syu` also rebuild installed devel packages whose
+  upstream has new commits. Two mechanisms feed this:
+  * **Devel database** — every time vouch builds a package whose recipe has a
+    VCS `source=()`, it records the exact upstream commit(s) it built against
+    (`$XDG_DATA_HOME/vouch/devel.json`). Later, a `git ls-remote` per source
+    tells it precisely whether upstream advanced. Because tracking is keyed on
+    the recipe's *sources*, this catches packages that build from a moving git
+    branch but carry a release-style version and **no `-git` suffix** (e.g.
+    `session-desktop`) — once vouch has built them once.
+  * **Name + version heuristic** — for `-git`/`-svn`/… packages vouch hasn't
+    built yet, it compares the upstream `HEAD` to the commit baked into the
+    installed version.
+
+  Pass `--no-devel` to skip both checks for speed. `vouch forget <pkg>` clears a
+  package's devel tracking (and its TOFU record).
 
 ## Verdicts and exit codes
 
